@@ -449,9 +449,8 @@ type ModelSwitcher interface {
 	AvailableModels(ctx context.Context) []ModelOption
 }
 
-// ModelDisplayNameReporter is an optional interface for running agent sessions
-// whose model id is not human-friendly (e.g. Devin's "claude-opus-5-5-medium"
-// for "Claude Opus 5.5"). The reply footer shows the display name when non-empty.
+// ModelDisplayNameReporter optionally provides a human-readable model name
+// for the reply footer when a session's model ID is less descriptive.
 type ModelDisplayNameReporter interface {
 	GetModelDisplayName() string
 }
