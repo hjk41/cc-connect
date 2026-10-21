@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -169,13 +170,13 @@ func TestAgentStartSession(t *testing.T) {
 func TestAgentMemoryAndSkill(t *testing.T) {
 	a := &Agent{workDir: "/tmp/my-project", activeIdx: -1}
 
-	assert.Equal(t, "/tmp/my-project/AGENTS.md", a.ProjectMemoryFile())
+	assert.Equal(t, filepath.Join(a.workDir, "AGENTS.md"), a.ProjectMemoryFile())
 	assert.NotEmpty(t, a.GlobalMemoryFile())
 
 	skillDirs := a.SkillDirs()
 	require.Len(t, skillDirs, 2)
-	assert.Contains(t, skillDirs[0], ".kimi/skills")
-	assert.Contains(t, skillDirs[1], ".kimi/skills")
+	assert.Contains(t, skillDirs[0], filepath.Join(".kimi", "skills"))
+	assert.Contains(t, skillDirs[1], filepath.Join(".kimi", "skills"))
 }
 
 func TestAgentAvailableModels(t *testing.T) {
@@ -195,12 +196,12 @@ func TestAgentAvailableModels_UsesKimiCodeCatalog(t *testing.T) {
 if [ "$1" != "--shim" ] || [ "$2" != "provider" ] || [ "$3" != "list" ] || [ "$4" != "--json" ]; then
   exit 2
 fi
-if [ "$KIMI_DISCOVERY_TOKEN" != "available" ] || [ "$(pwd -P)" != "$EXPECTED_WORK_DIR" ]; then
+if [ "$KIMI_DISCOVERY_TOKEN" != "available" ] || [ "$(pwd -P)" != "$(cd "$EXPECTED_WORK_DIR" && pwd -P)" ]; then
   exit 3
 fi
 printf '%s\n' '{"providers":{"private":{"apiKey":"must-not-be-used"}},"models":{"private/model-z":{"displayName":"Model Z"},"private/model-a":{"displayName":"Model A"}}}'
 `
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	bin = testutil.Shell(t, bin, script)
 
 	workDir := t.TempDir()
 	canonicalWorkDir, err := filepath.EvalSymlinks(workDir)
@@ -230,7 +231,7 @@ func TestAgentAvailableModels_PrefersConfiguredModels(t *testing.T) {
 printf 'called' > "$KIMI_MARKER"
 printf '%s\n' '{"models":{"cli/model":{}}}'
 `
-	require.NoError(t, os.WriteFile(bin, []byte(script), 0o755))
+	bin = testutil.Shell(t, bin, script)
 
 	a := &Agent{
 		cmd:       bin,
@@ -255,6 +256,7 @@ printf '%s\n' '{"models":{"cli/model":{}}}'
 func TestListKimiSessions_BothFlavors(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	workDir := t.TempDir()
 
@@ -329,6 +331,7 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	workDir := t.TempDir()
 	sessionID := "session_wire-1"
@@ -368,6 +371,7 @@ func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
 func TestAgentGetSessionHistory_KimiCode2WireFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "session_kimi-2-history"
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_project", sessionID)
@@ -419,6 +423,7 @@ func TestAgentGetSessionHistory_KimiCode2WireFormat(t *testing.T) {
 func TestAgentGetSessionHistory_SkipsInjectedUserMessages(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", "")
 	sessionID := "injection-fixture"
 	dir := filepath.Join(home, ".kimi-code", "sessions", "project", sessionID)
@@ -443,6 +448,7 @@ func TestAgentGetSessionHistory_SkipsInjectedUserMessages(t *testing.T) {
 func TestAgentSessions_UsesRelocatedKimiCodeHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", filepath.Join(home, "wrong-env-home"))
 	workDir := t.TempDir()
 	codeHome := filepath.Join(t.TempDir(), "code-home")
@@ -474,6 +480,7 @@ func TestAgentSessions_UsesRelocatedKimiCodeHome(t *testing.T) {
 func TestAgentGetSessionHistory_LegacyContextFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "legacy-history"
 	sessionDir := filepath.Join(home, ".kimi", "sessions", "project", sessionID)
@@ -497,6 +504,7 @@ func TestAgentGetSessionHistory_LegacyContextFormat(t *testing.T) {
 func TestAgentGetSessionHistory_OlderWireMessageFormat(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	sessionID := "older-wire-history"
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "project", sessionID)

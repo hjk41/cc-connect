@@ -28,8 +28,9 @@ func TestAppendImageRefs(t *testing.T) {
 		t.Errorf("no paths should leave prompt untouched, got %q", got)
 	}
 
-	got := AppendImageRefs("", []string{"/tmp/a.png"})
-	if !strings.Contains(got, "/tmp/a.png") {
+	path := filepath.Join(t.TempDir(), "a.png")
+	got := AppendImageRefs("", []string{path})
+	if !strings.Contains(got, path) {
 		t.Errorf("path missing from prompt: %q", got)
 	}
 	if !strings.Contains(strings.ToLower(got), "image") {

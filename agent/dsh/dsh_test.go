@@ -435,3 +435,15 @@ func sessionLog(id, cwd, prompt string) string {
 	}
 	return b.String()
 }
+
+func TestFindSessionDir_FileRootIsReadError(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "sessions"), []byte("broken root"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	agent := testAgent(t, map[string]any{"work_dir": t.TempDir(), "dsh_home": home})
+	_, _, err := agent.findSessionDir("22222222-2222-2222-2222-222222222222")
+	if err == nil || errors.Is(err, errSessionNotFound) {
+		t.Fatalf("file root must preserve a read error, got %v", err)
+	}
+}

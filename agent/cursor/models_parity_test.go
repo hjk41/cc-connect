@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 func sampleCatalog() []core.ModelOption {
@@ -160,9 +161,7 @@ func TestNew_ReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "agent")
 	body := "#!/bin/sh\nprintf '%s\\n' 'auto - Auto' 'grok-4.7 - Grok 4.7' 'grok-4.7-high - Grok 4.7 High'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	script = testutil.Shell(t, script, body)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ag, err := New(map[string]any{
 		"cmd":              "agent",
@@ -342,11 +341,9 @@ func TestAvailableModels_CLIEnvPrefixFailureAndCache(t *testing.T) {
 	outPath := filepath.Join(dir, "seen")
 	script := filepath.Join(dir, "fake-agent")
 	body := "#!/bin/sh\n" +
-		"printf '%s\\n' \"pwd=$(pwd)\" \"args=$*\" \"FOO=$FOO\" \"CFG=$CFG\" \"PROV=$PROV\" \"SESS=$SESS\" \"KEY=$CURSOR_API_KEY\" > " + shellQuote(outPath) + "\n" +
+		"printf '%s\\n' \"pwd=$(pwd -W 2>/dev/null || pwd)\" \"args=$*\" \"FOO=$FOO\" \"CFG=$CFG\" \"PROV=$PROV\" \"SESS=$SESS\" \"KEY=$CURSOR_API_KEY\" > " + shellQuote(outPath) + "\n" +
 		"printf '%s\\n' 'auto - Auto' 'grok-4.7-low - Grok 4.7 Low'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	script = testutil.Shell(t, script, body)
 
 	a := &Agent{
 		cmd:          script,
@@ -375,7 +372,7 @@ func TestAvailableModels_CLIEnvPrefixFailureAndCache(t *testing.T) {
 	if err != nil {
 		resolvedWork = work
 	}
-	if !strings.Contains(text, "pwd="+work) && !strings.Contains(text, "pwd="+resolvedWork) {
+	if !strings.Contains(text, "pwd="+filepath.ToSlash(work)) && !strings.Contains(text, "pwd="+filepath.ToSlash(resolvedWork)) {
 		t.Errorf("workdir not honored: %s", text)
 	}
 	if !strings.Contains(text, "args=--profile work models") {
@@ -396,9 +393,7 @@ func TestAvailableModels_CLIEnvPrefixFailureAndCache(t *testing.T) {
 	cursorModelsTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { cursorModelsTimeout = prev })
 	slow := filepath.Join(dir, "slow-agent")
-	if err := os.WriteFile(slow, []byte("#!/bin/sh\nwhile true; do sleep 1; done\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	slow = testutil.Shell(t, slow, "#!/bin/sh\nwhile true; do sleep 1; done\n")
 	bare := &Agent{cmd: slow, model: "current-model"}
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
@@ -436,9 +431,7 @@ func TestStaleModelsFetchDoesNotPublishAfterSwitch(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "slow-models")
 	body := "#!/bin/sh\nsleep 0.4\nprintf '%s\\n' 'stale-family - Stale' 'stale-family-high - Stale High'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	script = testutil.Shell(t, script, body)
 	a := &Agent{
 		cmd:             script,
 		model:           "stale-family",

@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 // ── normalizeMode ────────────────────────────────────────────
@@ -546,7 +548,7 @@ func TestSettingsPath(t *testing.T) {
 	}()
 
 	t.Setenv("PI_CODING_AGENT_DIR", "/custom")
-	if p := settingsPath(); p != "/custom/settings.json" {
+	if p := settingsPath(); p != filepath.Join("/custom", "settings.json") {
 		t.Errorf("settingsPath() = %q, want /custom/settings.json", p)
 	}
 }
@@ -1898,9 +1900,7 @@ EOF
     esac
 done
 `, sessionID)
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
+	scriptPath = testutil.Shell(t, scriptPath, scriptBody)
 
 	s, err := newPiSession(context.Background(), scriptPath, nil, t.TempDir(), "", "", "", true, "", nil)
 	if err != nil {
@@ -1940,9 +1940,7 @@ while IFS= read -r line; do
     esac
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
+	scriptPath = testutil.Shell(t, scriptPath, scriptBody)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -1972,9 +1970,7 @@ while IFS= read -r line; do
     echo "{\"type\":\"extension_ui_request\",\"id\":\"e$i\",\"method\":\"setStatus\",\"statusKey\":\"plan-mode\"}"
 done
 `
-	if err := os.WriteFile(scriptPath, []byte(scriptBody), 0o755); err != nil {
-		t.Fatalf("write fake script: %v", err)
-	}
+	scriptPath = testutil.Shell(t, scriptPath, scriptBody)
 
 	// Bound the wait: if the fix is wrong (rpcReady closed too early on the
 	// extension_ui_request), newPiSession returns within milliseconds with
@@ -2889,4 +2885,22 @@ func TestHandleAgentEnd_SkipsAssistantWithoutUsage(t *testing.T) {
 	if usage.InputTokens != 3000 {
 		t.Errorf("InputTokens = %d, want 3000", usage.InputTokens)
 	}
+}
+
+// Frozen time reproduces Windows clock collisions deterministically on every OS.
+func TestPiSessionAttachmentDirsUniqueWithFrozenClock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		work := t.TempDir()
+		first, err := newPiSession(context.Background(), "pi", nil, work, "", "", "", false, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		second, err := newPiSession(context.Background(), "pi", nil, work, "", "", "", false, "", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first.attachDir == second.attachDir {
+			t.Fatalf("sessions share attachment directory: %s", first.attachDir)
+		}
+	})
 }

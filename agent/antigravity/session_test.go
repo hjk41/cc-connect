@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 func TestSlugify(t *testing.T) {
@@ -60,6 +61,7 @@ func TestNormalizeMode(t *testing.T) {
 
 func TestSession_ContinueSessionTreatedAsFresh(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 
 	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", "default", core.ContinueSession, nil, 0)
 	if err != nil {
@@ -165,6 +167,7 @@ func TestAntigravitySession_ResumePassesConversationID(t *testing.T) {
 
 func TestDefaultModeCreatesPermissionBridge(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
 
 	s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", "default", "", nil, 0)
 	if err != nil {
@@ -184,6 +187,7 @@ func TestNonDefaultModesDoNotCreatePermissionBridge(t *testing.T) {
 	for _, mode := range []string{"yolo", "plan"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
+			t.Setenv("USERPROFILE", t.TempDir())
 
 			s, err := newAntigravitySession(context.Background(), "echo", nil, "/tmp", "", mode, "", nil, 0)
 			if err != nil {
@@ -214,13 +218,12 @@ func TestRespondPermissionRequiresDefaultMode(t *testing.T) {
 func TestSendDoesNotHoldStdinOpen(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	workDir := t.TempDir()
 	cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
 	script := "#!/bin/sh\ncat >/dev/null\nprintf 'done\\n'\n"
-	if err := os.WriteFile(cmdPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("WriteFile fake agy: %v", err)
-	}
+	cmdPath = testutil.Shell(t, cmdPath, script)
 
 	s, err := newAntigravitySession(context.Background(), cmdPath, nil, workDir, "", "default", "", nil, 2*time.Second)
 	if err != nil {

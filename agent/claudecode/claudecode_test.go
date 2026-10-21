@@ -18,6 +18,7 @@ func TestNew_ParsesRunAsUserAndRunAsEnv(t *testing.T) {
 		"run_as_user": "partseeker-coder",
 		"run_as_env":  []any{"PGSSLROOTCERT", "PGSSLMODE"},
 	}
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)
@@ -35,6 +36,9 @@ func TestNew_ParsesRunAsUserAndRunAsEnv(t *testing.T) {
 }
 
 func TestNew_RunAsUserSkipsClaudeLookPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("run_as_user is Unix-only")
+	}
 	// With run_as_user set, the supervisor's PATH lookup for "claude" is
 	// skipped because the target user's PATH is what matters. Verify that
 	// New() doesn't fail even when claude isn't on this test process's PATH.
@@ -638,7 +642,6 @@ func TestWorkspaceAgentOptions_RoundTripsThroughNew(t *testing.T) {
 	opts := parent.WorkspaceAgentOptions()
 	opts["work_dir"] = t.TempDir()
 	opts["run_as_user"] = "skip-lookpath"
-
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New(snapshot) returned error: %v", err)
@@ -1038,6 +1041,7 @@ func TestGetSessionHistory_TimestampsAreLocal(t *testing.T) {
 	// so we don't need a manual restore (which would need errcheck handling).
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	t.Setenv("USERPROFILE", homeDir)
 
 	workDir := t.TempDir()
 	projectsBase := filepath.Join(homeDir, ".claude", "projects")
@@ -1146,6 +1150,7 @@ func TestNew_ParsesContextWindowTokens(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.opts["work_dir"] = t.TempDir()
 			tc.opts["run_as_user"] = "ci-test-skip-cli-lookup"
+			tc.opts["cmd"] = os.Args[0]
 			a, err := New(tc.opts)
 			if err != nil {
 				t.Fatalf("New returned error: %v", err)
@@ -1168,6 +1173,7 @@ func TestWorkspaceAgentOptions_PropagatesContextWindowTokens(t *testing.T) {
 		"context_window_tokens": 750_000,
 		"run_as_user":           "ci-test-skip-cli-lookup",
 	}
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New returned error: %v", err)

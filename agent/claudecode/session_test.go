@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -707,7 +708,7 @@ func TestWriteTempAppendPromptFile_ReadableByOtherUser(t *testing.T) {
 		t.Fatalf("stat: %v", err)
 	}
 	want := os.FileMode(0o644)
-	if info.Mode().Perm() != want {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != want {
 		t.Fatalf("per-spawn prompt file mode = %o, want %o — run_as_user target user would get EACCES (#1429)",
 			info.Mode().Perm(), want)
 	}

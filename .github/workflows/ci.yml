@@ -126,6 +126,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+      - name: Install Windows test dependencies
+        if: runner.os == 'Windows'
+        run: choco install sqlite --yes --no-progress
       - name: Download dependencies
         run: go mod download
       - name: Verify module checksums

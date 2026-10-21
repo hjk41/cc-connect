@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -359,6 +360,9 @@ func TestIFlowSessionDefaultToolTimeout(t *testing.T) {
 }
 
 func TestIFlowSessionPendingToolTimeoutClearsBusyState(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("iFlow requires a Unix PTY; creack/pty does not support Windows")
+	}
 	oldTimeout := iflowPendingToolTimeout
 	oldDefaultTimeout := iflowPendingToolTimeoutDefaultMode
 	iflowPendingToolTimeout = 80 * time.Millisecond

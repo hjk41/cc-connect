@@ -220,6 +220,7 @@ func TestSession_LateUnlockDropped(t *testing.T) {
 	if !ok {
 		t.Fatal("first TryLock should succeed")
 	}
+	s.busySince = time.Now().Add(-time.Second) // independent of the OS clock resolution
 	if _, broken := s.BreakStaleLock(0); !broken {
 		t.Fatal("BreakStaleLock(0) should break the held lock")
 	}
@@ -250,6 +251,7 @@ func TestSession_BreakStaleLockThreshold(t *testing.T) {
 	if _, broken := s.BreakStaleLock(time.Hour); broken {
 		t.Fatal("lock held shorter than maxHeld must not break")
 	}
+	s.busySince = time.Now().Add(-time.Second) // independent of the OS clock resolution
 	if _, broken := s.BreakStaleLock(0); !broken {
 		t.Fatal("lock held longer than maxHeld should break")
 	}

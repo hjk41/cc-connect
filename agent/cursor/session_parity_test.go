@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 //go:embed testdata/stream_partial.jsonl
@@ -32,9 +33,7 @@ func writeFakeAgent(t *testing.T, body string) string {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent")
 	script := "#!/bin/sh\n" + body
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	path = testutil.Shell(t, path, script)
 	return path
 }
 

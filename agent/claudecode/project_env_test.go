@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"os"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -19,6 +20,7 @@ func TestNew_ParsesProjectEnvFromOpts(t *testing.T) {
 		},
 	}
 
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -55,6 +57,7 @@ func TestNew_ParsesProjectEnvFromMapStringAny(t *testing.T) {
 		},
 	}
 
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -79,6 +82,7 @@ func TestNew_NoEnvOpts(t *testing.T) {
 		"run_as_user": "test-user",
 	}
 
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
@@ -104,6 +108,7 @@ func TestNew_ProjectEnvOverridesProviderEnv(t *testing.T) {
 		},
 	}
 
+	opts["cmd"] = os.Args[0]
 	a, err := New(opts)
 	if err != nil {
 		t.Fatalf("New() error: %v", err)

@@ -193,7 +193,7 @@ func (a *Agent) findSessionDir(sessionID string) (string, sessionMeta, error) {
 	}
 	slugs, err := os.ReadDir(root)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if _, statErr := os.Stat(root); os.IsNotExist(err) && os.IsNotExist(statErr) {
 			return "", sessionMeta{}, sessionNotFound(sessionID)
 		}
 		return "", sessionMeta{}, fmt.Errorf("dsh: read sessions: %w", err)

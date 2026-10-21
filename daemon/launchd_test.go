@@ -67,6 +67,14 @@ func TestPreferredLaunchdDomainFallsBackToUserWhenGUIDomainUnavailable(t *testin
 }
 
 func TestLaunchdStatusUsesUserDomainWhenGUIDomainUnavailable(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	plist := launchdPlistPath()
+	if err := os.MkdirAll(filepath.Dir(plist), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(plist, []byte(buildPlist(Config{})), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	orig := runLaunchctl
 	t.Cleanup(func() { runLaunchctl = orig })
 

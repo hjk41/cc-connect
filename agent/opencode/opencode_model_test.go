@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 type errWriter struct{}
@@ -41,9 +42,7 @@ func writeFakeModelsBin(t *testing.T, lines []string, exitCode int) string {
 		body.WriteString("fi\n")
 	}
 
-	if err := os.WriteFile(name, []byte(body.String()), 0755); err != nil {
-		t.Fatal(err)
-	}
+	name = testutil.Shell(t, name, body.String())
 	return name
 }
 
@@ -128,9 +127,7 @@ func writeBlockingModelsBin(t *testing.T, gatePath string, lines []string) strin
 	}
 	body.WriteString("fi\n")
 
-	if err := os.WriteFile(name, []byte(body.String()), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	name = testutil.Shell(t, name, body.String())
 	return name
 }
 
@@ -163,9 +160,7 @@ func writeCountingModelsBin(t *testing.T, countPath, gatePath string, lines []st
 	}
 	body.WriteString("fi\n")
 
-	if err := os.WriteFile(name, []byte(body.String()), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	name = testutil.Shell(t, name, body.String())
 	return name
 }
 
@@ -550,9 +545,7 @@ func TestAvailableModels_CustomCmdUsedForDiscovery(t *testing.T) {
 	tmpDir := t.TempDir()
 	customBin := filepath.Join(tmpDir, "my-ai-cli")
 	script := "#!/bin/sh\nif [ \"$1\" = \"models\" ]; then\nprintf '%s\\n' 'custom/model-a'\nfi\n"
-	if err := os.WriteFile(customBin, []byte(script), 0755); err != nil {
-		t.Fatal(err)
-	}
+	customBin = testutil.Shell(t, customBin, script)
 
 	a := &Agent{cmd: customBin, activeIdx: -1}
 	got := a.AvailableModels(context.Background())
@@ -1195,9 +1188,7 @@ func writeFakeDeleteBin(t *testing.T, wantID string, exitCode int, stderr string
 	body.WriteString("fi\n")
 	body.WriteString("exit 0\n")
 
-	if err := os.WriteFile(name, []byte(body.String()), 0755); err != nil {
-		t.Fatal(err)
-	}
+	name = testutil.Shell(t, name, body.String())
 	return name
 }
 

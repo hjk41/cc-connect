@@ -13,6 +13,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 func TestCursorInterfacesAndMemory(t *testing.T) {
@@ -571,9 +573,7 @@ func TestRunSQLite_KillsOversizedWriterBeforeWait(t *testing.T) {
 		"    sys.stdout.buffer.write(b\"y\"*65536)\n" +
 		"    sys.stdout.flush()\n" +
 		"    time.sleep(0.05)\n'\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	script = testutil.Shell(t, script, body)
 	prevBin, prevMax := cursorSQLiteBin, cursorMaxHexResult
 	cursorSQLiteBin = script
 	cursorMaxHexResult = 1024
