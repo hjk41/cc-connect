@@ -2,7 +2,6 @@ package cursor
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -16,79 +15,6 @@ import (
 	"testing"
 	"time"
 )
-
-func makeUsageDB(t *testing.T, path, value string) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		t.Fatal(err)
-	}
-	uri, err := sqliteURI(path, "rw")
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := sql.Open("sqlite", strings.Replace(uri, "mode=rw", "mode=rwc", 1))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec("CREATE TABLE ItemTable (key TEXT, value TEXT)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO ItemTable VALUES (?, ?)", "cursorAuth/accessToken", value); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestCursorUsageToken(t *testing.T) {
-	for _, raw := range []string{"test-secret", `"test-secret"`} {
-		t.Run(raw, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "space #?", "state.vscdb")
-			makeUsageDB(t, path, raw)
-			token, err := readCursorUsageToken(context.Background(), path)
-			if err != nil || token != "test-secret" {
-				t.Fatalf("token read failed: %v", err)
-			}
-		})
-	}
-	for _, raw := range []string{"", `""`, `"invalid`} {
-		path := filepath.Join(t.TempDir(), "state.vscdb")
-		makeUsageDB(t, path, raw)
-		if _, err := readCursorUsageToken(context.Background(), path); err == nil || !strings.Contains(err.Error(), "sign in") {
-			t.Fatalf("want login error, got %v", err)
-		}
-	}
-	path := filepath.Join(t.TempDir(), "missing.db")
-	if _, err := readCursorUsageToken(context.Background(), path); err == nil || !strings.Contains(err.Error(), "sign in") {
-		t.Fatalf("missing database: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("read-only access created database: %v", err)
-	}
-	path = filepath.Join(t.TempDir(), "no-login.db")
-	makeUsageDB(t, path, "temporary")
-	db, _ := sql.Open("sqlite", path)
-	if _, err := db.Exec("DELETE FROM ItemTable"); err != nil {
-		t.Fatal(err)
-	}
-	db.Close()
-	if _, err := readCursorUsageToken(context.Background(), path); err == nil || !strings.Contains(err.Error(), "sign in") {
-		t.Fatalf("missing token: %v", err)
-	}
-}
-
-func TestCursorUsageDBPaths(t *testing.T) {
-	t.Setenv("APPDATA", "/roaming")
-	t.Setenv("XDG_CONFIG_HOME", "/xdg")
-	for _, tc := range []struct{ os, root string }{{"darwin", "/home/test/Library/Application Support"}, {"windows", "/roaming"}, {"linux", "/xdg"}} {
-		if got := cursorUsageDBPath(tc.os, "/home/test"); got != filepath.Join(tc.root, "Cursor/User/globalStorage/state.vscdb") {
-			t.Errorf("%s: %s", tc.os, got)
-		}
-	}
-	t.Setenv("XDG_CONFIG_HOME", "")
-	if got := cursorUsageDBPath("linux", "/home/test"); got != "/home/test/.config/Cursor/User/globalStorage/state.vscdb" {
-		t.Fatal(got)
-	}
-}
 
 func TestParseCursorUsage(t *testing.T) {
 	const now int64 = 1700000000
@@ -144,9 +70,21 @@ func setupCursorUsage(t *testing.T) {
 	oldHome, oldURL, oldClient := cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient
 	t.Cleanup(func() { cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient = oldHome, oldURL, oldClient })
 	cursorUserHomeDir = func() (string, error) { return home, nil }
+	t.Setenv("CURSOR_AUTH_TOKEN", "")
+	t.Setenv("CURSOR_API_ENDPOINT", "")
 	t.Setenv("APPDATA", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
-	makeUsageDB(t, cursorUsageDBPath(runtime.GOOS, home), `"usage-test-secret"`)
+	writeCursorUsageAuth(t, cursorUsageAuthPath(runtime.GOOS, home), "usage-test-secret")
+}
+
+func writeCursorUsageAuth(t *testing.T, path, token string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"accessToken":"`+token+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 type usageRoundTripper func(*http.Request) (*http.Response, error)
@@ -245,15 +183,6 @@ func TestCursorUsageCancellation(t *testing.T) {
 	}
 }
 
-func TestCursorUsageDBPathWindowsFallback(t *testing.T) {
-	t.Setenv("APPDATA", "")
-	got := cursorUsageDBPath("windows", "/home/test")
-	want := filepath.Join("/home/test", "AppData/Roaming/Cursor/User/globalStorage/state.vscdb")
-	if got != want {
-		t.Fatalf("path = %q, want %q", got, want)
-	}
-}
-
 func TestCursorUsageAuthPath(t *testing.T) {
 	t.Setenv("APPDATA", "/roaming")
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
@@ -295,7 +224,7 @@ func TestReadCursorCLIAuthToken(t *testing.T) {
 	}
 }
 
-func TestCursorUsagePrefersCLITokenThenDesktop(t *testing.T) {
+func TestCursorUsageTokenPrecedence(t *testing.T) {
 	home := t.TempDir()
 	oldHome, oldURL, oldClient := cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient
 	t.Cleanup(func() { cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient = oldHome, oldURL, oldClient })
@@ -305,15 +234,9 @@ func TestCursorUsagePrefersCLITokenThenDesktop(t *testing.T) {
 	t.Setenv("APPDATA", home)
 	t.Setenv("XDG_CONFIG_HOME", home)
 	authPath := cursorUsageAuthPath(runtime.GOOS, home)
-	if err := os.MkdirAll(filepath.Dir(authPath), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(authPath, []byte(`{"accessToken":"cli-token"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	makeUsageDB(t, cursorUsageDBPath(runtime.GOOS, home), "desktop-token")
+	writeCursorUsageAuth(t, authPath, "cli-token")
 
-	// CLI token succeeds: no need to touch the desktop DB.
+	// The CLI token is used.
 	var auths []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
@@ -328,26 +251,22 @@ func TestCursorUsagePrefersCLITokenThenDesktop(t *testing.T) {
 		t.Fatalf("auth order = %v", auths)
 	}
 
-	// Expired CLI token falls back to the desktop login.
+	// An expired CLI token has no desktop fallback any more.
 	auths = nil
 	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auths = append(auths, r.Header.Get("Authorization"))
-		if r.Header.Get("Authorization") == "Bearer cli-token" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		fmt.Fprint(w, `{"planUsage":{"autoPercentUsed":10}}`)
+		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer server2.Close()
 	cursorUsageBaseURL, cursorUsageClient = server2.URL, server2.Client()
-	if _, err := (&Agent{}).GetUsage(context.Background()); err != nil {
-		t.Fatal(err)
+	if _, err := (&Agent{}).GetUsage(context.Background()); err == nil || !strings.Contains(err.Error(), "login expired") {
+		t.Fatalf("expired CLI token error = %v", err)
 	}
-	if !reflect.DeepEqual(auths, []string{"Bearer cli-token", "Bearer desktop-token"}) {
-		t.Fatalf("fallback order = %v", auths)
+	if !reflect.DeepEqual(auths, []string{"Bearer cli-token"}) {
+		t.Fatalf("expired CLI token calls = %v", auths)
 	}
 
-	// Explicit env token wins over both.
+	// CURSOR_AUTH_TOKEN is an explicit override.
 	t.Setenv("CURSOR_AUTH_TOKEN", "env-token")
 	auths = nil
 	server3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -361,5 +280,14 @@ func TestCursorUsagePrefersCLITokenThenDesktop(t *testing.T) {
 	}
 	if !reflect.DeepEqual(auths, []string{"Bearer env-token"}) {
 		t.Fatalf("env order = %v", auths)
+	}
+
+	// No auth file and no env token.
+	t.Setenv("CURSOR_AUTH_TOKEN", "")
+	if err := os.Remove(authPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := (&Agent{}).GetUsage(context.Background()); err == nil || !strings.Contains(err.Error(), "no saved login") {
+		t.Fatalf("missing login error = %v", err)
 	}
 }

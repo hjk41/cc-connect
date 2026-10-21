@@ -2,7 +2,6 @@ package cursor
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,7 +17,6 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
-	_ "modernc.org/sqlite"
 )
 
 var _ core.UsageReporter = (*Agent)(nil)
@@ -30,54 +28,6 @@ var cursorUsageClient = &http.Client{
 	Timeout:       70 * time.Second,
 	Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 5 * time.Second}).DialContext, TLSHandshakeTimeout: 5 * time.Second},
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-}
-
-func cursorUsageDBPath(goos, home string) string {
-	var root string
-	switch goos {
-	case "darwin":
-		root = filepath.Join(home, "Library", "Application Support")
-	case "windows":
-		root = os.Getenv("APPDATA")
-		if root == "" {
-			root = filepath.Join(home, "AppData", "Roaming")
-		}
-	default:
-		root = os.Getenv("XDG_CONFIG_HOME")
-		if root == "" {
-			root = filepath.Join(home, ".config")
-		}
-	}
-	return filepath.Join(root, "Cursor", "User", "globalStorage", "state.vscdb")
-}
-
-func readCursorUsageToken(ctx context.Context, path string) (string, error) {
-	uri, err := sqliteURI(path, "ro")
-	if err != nil {
-		return "", fmt.Errorf("cursor: locate login database: %w", err)
-	}
-	db, err := sql.Open("sqlite", uri+"&_pragma=busy_timeout(2000)")
-	if err != nil {
-		return "", fmt.Errorf("cursor: cannot open login database; open Cursor and sign in")
-	}
-	defer db.Close()
-	db.SetMaxOpenConns(1)
-	var raw string
-	if err := db.QueryRowContext(ctx, "SELECT value FROM ItemTable WHERE key='cursorAuth/accessToken' LIMIT 1;").Scan(&raw); err != nil {
-		return "", fmt.Errorf("cursor: cannot read login database; open Cursor and sign in")
-	}
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, `"`) {
-		var token string
-		if json.Unmarshal([]byte(raw), &token) != nil {
-			return "", fmt.Errorf("cursor: invalid saved login; sign in to Cursor again")
-		}
-		raw = strings.TrimSpace(token)
-	}
-	if raw == "" {
-		return "", fmt.Errorf("cursor: no saved login; open Cursor and sign in")
-	}
-	return raw, nil
 }
 
 // cursorUsageAuthPath mirrors the Cursor Agent CLI's own auth file location.
@@ -123,9 +73,9 @@ func readCursorCLIAuthToken(path string) (string, error) {
 }
 
 // cursorUsageTokens builds token candidates in priority order: an explicit
-// CURSOR_AUTH_TOKEN, then the Cursor Agent CLI login, then the desktop login
-// for users who never ran `agent login`.
-func cursorUsageTokens(ctx context.Context, goos, home string) []string {
+// CURSOR_AUTH_TOKEN, then the Cursor Agent CLI login. The CLI is the only
+// supported login source; there is no desktop database fallback.
+func cursorUsageTokens(goos, home string) []string {
 	var tokens []string
 	seen := make(map[string]bool)
 	add := func(token string) {
@@ -140,9 +90,6 @@ func cursorUsageTokens(ctx context.Context, goos, home string) []string {
 	if token, err := readCursorCLIAuthToken(cursorUsageAuthPath(goos, home)); err == nil {
 		add(token)
 	}
-	if token, err := readCursorUsageToken(ctx, cursorUsageDBPath(goos, home)); err == nil {
-		add(token)
-	}
 	return tokens
 }
 
@@ -153,7 +100,7 @@ func cursorUsageEndpoint() string {
 	return cursorUsageBaseURL
 }
 
-// GetUsage reads the desktop login and queries subscription quota without starting a session.
+// GetUsage reads the Cursor Agent CLI login and queries subscription quota without starting a session.
 func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -162,11 +109,11 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	defer cancel()
 	home, err := cursorUserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("cursor: cannot locate login; run agent login or sign in to Cursor")
+		return nil, fmt.Errorf("cursor: cannot locate login; run agent login")
 	}
-	tokens := cursorUsageTokens(ctx, runtime.GOOS, home)
+	tokens := cursorUsageTokens(runtime.GOOS, home)
 	if len(tokens) == 0 {
-		return nil, fmt.Errorf("cursor: no saved login; run agent login or sign in to Cursor")
+		return nil, fmt.Errorf("cursor: no saved login; run agent login")
 	}
 	endpoint := cursorUsageEndpoint()
 	var lastErr error
