@@ -178,11 +178,14 @@ type appServerSession struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	stateMu       sync.Mutex
-	pendingMsgs   []string
-	currentTurn   string
-	completedTurn string
-	preambleSent  bool
+	stateMu        sync.Mutex
+	pendingMsgs    []string
+	currentTurn    string
+	completedTurn  string
+	preambleSent   bool
+	turnStarting   bool
+	compactDone    chan struct{} // guarded by stateMu; only the Send caller emits completion
+	compactTimeout time.Duration // zero uses the production timeout
 
 	runtimeMu sync.RWMutex
 	usage     *core.UsageReport
@@ -476,6 +479,21 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	if !s.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
+	if strings.TrimSpace(prompt) == "/compact" && len(images) == 0 && len(files) == 0 {
+		return s.compactThread()
+	}
+	s.stateMu.Lock()
+	if s.compactDone != nil || s.turnStarting {
+		s.stateMu.Unlock()
+		return fmt.Errorf("codex app-server: another request is in progress")
+	}
+	s.turnStarting = true
+	s.stateMu.Unlock()
+	defer func() {
+		s.stateMu.Lock()
+		s.turnStarting = false
+		s.stateMu.Unlock()
+	}()
 
 	if len(files) > 0 {
 		filePaths := core.SaveFilesToDisk(s.workDir, messageID, files)
@@ -598,6 +616,8 @@ func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage)
 		s.handlePermissionsApproval(rawID, params)
 	case "item/tool/requestUserInput":
 		s.handleRequestUserInput(rawID, params)
+	case "mcpServer/elicitation/request":
+		s.handleElicitationRequest(rawID, params)
 	case "item/tool/call":
 		s.handleDynamicToolCall(rawID, params)
 	default:
@@ -946,6 +966,19 @@ func (s *appServerSession) GetReasoningEffort() string {
 	return strings.TrimSpace(s.effort)
 }
 
+var _ core.LiveReasoningSwitcher = (*appServerSession)(nil)
+
+// SetLiveReasoningEffort updates the effort sent on the next turn/start.
+func (s *appServerSession) SetLiveReasoningEffort(effort string) bool {
+	if !s.Alive() || s.CurrentSessionID() == "" {
+		return false
+	}
+	s.runtimeMu.Lock()
+	s.effort = normalizeRuntimeReasoningEffort(effort)
+	s.runtimeMu.Unlock()
+	return true
+}
+
 func (s *appServerSession) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if err := s.refreshUsage(ctx); err != nil {
 		if cached := s.cachedUsage(); cached != nil {
@@ -1144,6 +1177,9 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	}
 
 	switch method {
+	case "thread/compacted":
+		s.signalCompaction(scope.ThreadID)
+
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
@@ -1158,8 +1194,14 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 
 	case "item/completed":
 		var notif itemNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.matchesCurrentTurn(notif.TurnID) {
-			s.handleItemCompleted(notif.Item)
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			if notif.Item["type"] == "contextCompaction" {
+				if notif.ThreadID == s.CurrentSessionID() {
+					s.handleItemCompleted(notif.Item)
+				}
+			} else if s.matchesCurrentTurn(notif.TurnID) {
+				s.handleItemCompleted(notif.Item)
+			}
 		}
 
 	case "turn/completed":
@@ -1243,6 +1285,9 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 	}
 
 	switch itemType {
+	case "contextCompaction":
+		s.signalCompaction(s.CurrentSessionID())
+
 	case "reasoning":
 		text := appServerReasoningText(item)
 		if text != "" {
@@ -1548,7 +1593,7 @@ func rpcIDToInt64(v any) (int64, bool) {
 
 func (s *appServerSession) beginTurn(turnID string) {
 	s.stateMu.Lock()
-	if turnID == "" || turnID == s.currentTurn || turnID == s.completedTurn {
+	if s.compactDone != nil || turnID == "" || turnID == s.currentTurn || turnID == s.completedTurn {
 		s.stateMu.Unlock()
 		return
 	}

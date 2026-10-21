@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/chenhg5/cc-connect/core"
 )
 
 func shortTestContext(t *testing.T) (context.Context, context.CancelFunc) {
@@ -119,5 +122,38 @@ func TestAvailableModels_FetchFromAgent(t *testing.T) {
 	if !hasCodex {
 		t.Logf("models: %v", models)
 		t.Log("agent models returned models but none of the expected ones (gpt-5.3-codex, opus-4.6-thinking, auto) - may be OK if CLI output format changed")
+	}
+}
+
+func TestWorkspaceAgentOptions_RoundTripsConfiguredOptions(t *testing.T) {
+	raw, err := New(map[string]any{
+		"cmd": []string{"go", "wrapper arg", "--stdio"}, "env": map[string]string{"CONFIG_ONLY": "a=b"},
+		"mode": "plan", "model": "custom", "reasoning_effort": "high", "work_dir": t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := raw.(*Agent)
+	parent.SetSessionEnv([]string{"TRANSIENT=omit"})
+	snapshotter, ok := raw.(core.WorkspaceAgentOptionSnapshotter)
+	if !ok {
+		t.Fatal("cursor does not snapshot workspace options")
+	}
+	opts := snapshotter.WorkspaceAgentOptions()
+	opts["work_dir"] = t.TempDir()
+	childRaw, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := childRaw.(*Agent)
+	if child.cmd != parent.cmd || !reflect.DeepEqual(child.cliExtraArgs, parent.cliExtraArgs) || !reflect.DeepEqual(child.configEnv, parent.configEnv) || child.mode != "plan" || child.model != "custom" || child.reasoningEffort != "high" {
+		t.Fatalf("workspace clone lost options: %#v", opts)
+	}
+	if len(child.sessionEnv) != 0 {
+		t.Fatal("snapshot included session env")
+	}
+	opts["cmd"].([]string)[1] = "changed"
+	if parent.cliExtraArgs[0] != "wrapper arg" {
+		t.Fatal("snapshot aliases parent args")
 	}
 }

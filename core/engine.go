@@ -4200,6 +4200,29 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 		}
 	}
 
+	// Re-apply the effective model after provider selection, which resets
+	// explicit pins. Use the parent's effective model (or a persisted
+	// workspace override), not the raw snapshot model: the snapshot records
+	// the configured model, while the active provider's model may have been
+	// the one actually in use before the clone.
+	effectiveModel := ""
+	if e.projectState != nil {
+		effectiveModel = e.projectState.WorkspaceModelOverride(workspace)
+	}
+	if effectiveModel == "" {
+		if ma, ok := e.agent.(interface{ GetModel() string }); ok {
+			effectiveModel = ma.GetModel()
+		}
+	}
+	if effectiveModel == "" {
+		effectiveModel, _ = opts["model"].(string)
+	}
+	if effectiveModel != "" {
+		if switcher, ok := agent.(ModelSwitcher); ok {
+			switcher.SetModel(effectiveModel)
+		}
+	}
+
 	// Create per-workspace session manager. An empty store path means "no
 	// persistence" everywhere else in the session manager, so it has to mean
 	// the same here: filepath.Dir("") is ".", which would otherwise drop
@@ -6405,7 +6428,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			// Auto-compress after finishing a turn, before sending any queued messages.
 			if triggerAutoCompress {
-				compressor, ok := e.agent.(ContextCompressor)
+				// Event processing uses a workspace-prefixed interactive key.
+				agentKey := sessionKey
+				if _, key, ok := strings.Cut(sessionKey, ":"+p.Name()+":"); ok {
+					agentKey = p.Name() + ":" + key
+				}
+				agent, _ := e.sessionContextForKey(agentKey)
+				compressor, ok := agent.(ContextCompressor)
 				if ok && compressor.CompressCommand() != "" {
 					if pendingSend != nil {
 						if err := <-pendingSend; err != nil {
@@ -6426,7 +6455,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					e.send(state.platform, state.replyCtx, compressNotice)
 
 					// Run compress inline while the session is still locked.
-					e.runCompress(state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
+					e.runCompress(agent, state, session, sessions, sessionKey, state.platform, state.replyCtx, true, lockGen)
 					return
 				}
 			}
@@ -10547,7 +10576,7 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderReasoningCard(msg.SessionKey))
 		return
 	}
 
@@ -10684,7 +10713,7 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 			e.replyWithButtons(p, msg.ReplyCtx, sb.String(), buttons)
 			return
 		}
-		e.replyWithCard(p, msg.ReplyCtx, e.renderModeCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderModeCard(msg.SessionKey))
 		return
 	}
 
@@ -11032,12 +11061,12 @@ func (e *Engine) cmdCompress(p Platform, msg *Message) {
 
 	e.send(p, msg.ReplyCtx, e.i18n.T(MsgCompressing))
 
-	go e.runCompress(state, session, sessions, iKey, p, msg.ReplyCtx, false, lockGen)
+	go e.runCompress(agent, state, session, sessions, iKey, p, msg.ReplyCtx, false, lockGen)
 }
 
 // runCompress sends the agent's compress command and handles results.
 // If autoTriggered is true, suppress user-visible "compressing" and completion messages.
-func (e *Engine) runCompress(state *interactiveState, session *Session, sessions *SessionManager, iKey string, p Platform, replyCtx any, auto bool, lockGen uint64) {
+func (e *Engine) runCompress(agent Agent, state *interactiveState, session *Session, sessions *SessionManager, iKey string, p Platform, replyCtx any, auto bool, lockGen uint64) {
 	// session.Unlock() is called inside drainQueuedMessagesAfterCompress
 	// while holding state.mu to close the race window. Deferred fallback
 	// ensures the lock is released on early-return paths.
@@ -11058,7 +11087,7 @@ func (e *Engine) runCompress(state *interactiveState, session *Session, sessions
 
 	drainEvents(state.agentSession.Events())
 
-	compressor, ok := e.agent.(ContextCompressor)
+	compressor, ok := agent.(ContextCompressor)
 	if !ok || compressor.CompressCommand() == "" {
 		if !auto {
 			e.reply(p, replyCtx, e.i18n.T(MsgCompressNotSupported))
@@ -11260,7 +11289,7 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 
 	if len(args) == 0 {
 		if supportsCards(p) {
-			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard())
+			e.replyWithCard(p, msg.ReplyCtx, e.renderProviderCard(msg.SessionKey))
 			return
 		}
 
@@ -11378,7 +11407,7 @@ func (e *Engine) cmdProviderAdd(p Platform, msg *Message, switcher ProviderSwitc
 			return
 		}
 		if _, ok := p.(InlineButtonSender); ok {
-			if btns := e.providerAddPresetButtons(); len(btns) > 0 {
+			if btns := e.providerAddPresetButtons(msg.SessionKey); len(btns) > 0 {
 				e.replyWithButtons(p, msg.ReplyCtx,
 					e.i18n.T(MsgProviderAddPickHint), btns)
 				return
@@ -11564,7 +11593,8 @@ func (e *Engine) handlePendingProviderAdd(p Platform, msg *Message, content stri
 	state.pendingProviderAdd = nil
 	state.mu.Unlock()
 
-	switcher, ok := e.agent.(ProviderSwitcher)
+	agent, _ := e.sessionContextForKey(msg.SessionKey)
+	switcher, ok := agent.(ProviderSwitcher)
 	if !ok {
 		return false
 	}
@@ -11656,8 +11686,9 @@ func (e *Engine) getPendingProviderAdd(sessionKey string) *pendingProviderAddSta
 
 // providerAddPresetButtons builds inline keyboard rows for platforms
 // that support InlineButtonSender but not full cards.
-func (e *Engine) providerAddPresetButtons() [][]ButtonOption {
-	agentType := e.agent.Name()
+func (e *Engine) providerAddPresetButtons(sessionKey string) [][]ButtonOption {
+	agent, _ := e.sessionContextForKey(sessionKey)
+	agentType := agent.Name()
 	presets, err := FetchProviderPresets()
 	if err != nil || presets == nil || len(presets.Providers) == 0 {
 		return nil
@@ -11686,7 +11717,8 @@ func (e *Engine) providerAddPresetButtons() [][]ButtonOption {
 // tryProviderAddPreset handles "/provider add <name>" with a single arg that
 // matches a preset name — sets up the pending API key flow.
 func (e *Engine) tryProviderAddPreset(p Platform, msg *Message, switcher ProviderSwitcher, presetName string) bool {
-	agentType := e.agent.Name()
+	agent, _ := e.sessionContextForKey(msg.SessionKey)
+	agentType := agent.Name()
 	presets, err := FetchProviderPresets()
 	if err != nil || presets == nil {
 		return false
@@ -12754,9 +12786,9 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/model":
 		return e.renderModelCard(sessionKey)
 	case "/reasoning":
-		return e.renderReasoningCard()
+		return e.renderReasoningCard(sessionKey)
 	case "/mode":
-		return e.renderModeCard()
+		return e.renderModeCard(sessionKey)
 	case "/lang":
 		return e.renderLangCard()
 	case "/status":
@@ -12782,7 +12814,7 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/history":
 		return e.renderHistoryCard(sessionKey)
 	case "/provider":
-		return e.renderProviderCard()
+		return e.renderProviderCard(sessionKey)
 	case "/provider/add", "/provider/add-other", "/provider/add-cancel":
 		return e.renderProviderAddCard(sessionKey)
 	case "/cron":
@@ -12934,10 +12966,17 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		go e.performModelSwitchAsync(sessionKey, state, agent, sessions, target)
 
 	case "/reasoning":
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if agent == nil {
+			agent = e.agent
+		}
+		if sessions == nil {
+			sessions = e.sessions
+		}
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ReasoningEffortSwitcher)
+		switcher, ok := agent.(ReasoningEffortSwitcher)
 		if !ok {
 			return
 		}
@@ -12953,16 +12992,23 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 				if selected == "" {
 					selected = target
 				}
-				e.applyReasoningSelection(sessionKey, e.sessions, e.agent, selected)
+				e.applyReasoningSelection(sessionKey, sessions, agent, selected)
 				return
 			}
 		}
 
 	case "/mode":
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if agent == nil {
+			agent = e.agent
+		}
+		if sessions == nil {
+			sessions = e.sessions
+		}
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ModeSwitcher)
+		switcher, ok := agent.(ModeSwitcher)
 		if !ok {
 			return
 		}
@@ -12975,13 +13021,13 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		e.cleanupInteractiveState(interactiveKey)
 		// Agents that apply the mode when the same conversation resumes keep
 		// the saved session id. Others need a new session.
-		if applier, ok := e.agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
+		if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
 			return
 		}
-		s := e.sessions.GetOrCreateActive(sessionKey)
+		s := sessions.GetOrCreateActive(sessionKey)
 		s.SetAgentSessionID("", "")
 		s.ClearHistory()
-		e.sessions.Save()
+		sessions.Save()
 
 	case "/lang":
 		if args == "" {
@@ -13008,10 +13054,17 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		e.i18n.SetLang(lang)
 
 	case "/provider":
+		agent, sessions := e.sessionContextForKey(sessionKey)
+		if agent == nil {
+			agent = e.agent
+		}
+		if sessions == nil {
+			sessions = e.sessions
+		}
 		if args == "" {
 			return
 		}
-		switcher, ok := e.agent.(ProviderSwitcher)
+		switcher, ok := agent.(ProviderSwitcher)
 		if !ok {
 			return
 		}
@@ -13021,11 +13074,12 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 		if switcher.SetActiveProvider(provName) {
 			e.cleanupInteractiveState(interactiveKey)
-			s := e.sessions.GetOrCreateActive(sessionKey)
+			s := sessions.GetOrCreateActive(sessionKey)
 			s.SetAgentSessionID("", "")
 			s.ClearHistory()
-			e.sessions.Save()
-			if e.providerSaveFunc != nil {
+			s.SetActiveProvider(provName)
+			sessions.Save()
+			if sessions == e.sessions && e.providerSaveFunc != nil {
 				_ = e.providerSaveFunc(provName)
 			}
 		}
@@ -13034,7 +13088,8 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if args == "" {
 			return
 		}
-		agentType := e.agent.Name()
+		agent, _ := e.sessionContextForKey(sessionKey)
+		agentType := agent.Name()
 		presets, err := FetchProviderPresets()
 		if err != nil || presets == nil {
 			return
@@ -13763,8 +13818,12 @@ func (e *Engine) renderModelSwitchResultCard(target string, err error) *Card {
 		Build()
 }
 
-func (e *Engine) renderReasoningCard() *Card {
-	switcher, ok := e.agent.(ReasoningEffortSwitcher)
+func (e *Engine) renderReasoningCard(sessionKey string) *Card {
+	agent, _ := e.sessionContextForKey(sessionKey)
+	if agent == nil {
+		agent = e.agent
+	}
+	switcher, ok := agent.(ReasoningEffortSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
 	}
@@ -13797,8 +13856,12 @@ func (e *Engine) renderReasoningCard() *Card {
 	return cb.Build()
 }
 
-func (e *Engine) renderModeCard() *Card {
-	switcher, ok := e.agent.(ModeSwitcher)
+func (e *Engine) renderModeCard(sessionKey string) *Card {
+	agent, _ := e.sessionContextForKey(sessionKey)
+	if agent == nil {
+		agent = e.agent
+	}
+	switcher, ok := agent.(ModeSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleMode), "violet", e.i18n.T(MsgModeNotSupported))
 	}
@@ -14100,8 +14163,12 @@ func (e *Engine) renderHistoryCard(sessionKey string) *Card {
 		Build()
 }
 
-func (e *Engine) renderProviderCard() *Card {
-	switcher, ok := e.agent.(ProviderSwitcher)
+func (e *Engine) renderProviderCard(sessionKey string) *Card {
+	agent, _ := e.sessionContextForKey(sessionKey)
+	if agent == nil {
+		agent = e.agent
+	}
+	switcher, ok := agent.(ProviderSwitcher)
 	if !ok {
 		return e.simpleCard(e.i18n.T(MsgCardTitleProvider), "indigo", e.i18n.T(MsgProviderNotSupported))
 	}
@@ -14170,7 +14237,8 @@ func (e *Engine) renderProviderAddCard(sessionKey string) *Card {
 	}
 
 	// Show preset selection card
-	agentType := e.agent.Name()
+	agent, _ := e.sessionContextForKey(sessionKey)
+	agentType := agent.Name()
 	lang := e.i18n.CurrentLang()
 
 	cb := NewCard().Title(e.i18n.T(MsgCardTitleProviderAdd), "indigo").
@@ -14201,7 +14269,7 @@ func (e *Engine) renderProviderAddCard(sessionKey string) *Card {
 		globals, gErr := e.listGlobalProvidersFunc(agentType)
 		if gErr == nil && len(globals) > 0 {
 			var existing map[string]bool
-			if sw, ok := e.agent.(ProviderSwitcher); ok {
+			if sw, ok := agent.(ProviderSwitcher); ok {
 				existing = make(map[string]bool)
 				for _, p := range sw.ListProviders() {
 					existing[p.Name] = true
@@ -14241,7 +14309,8 @@ func (e *Engine) executeProviderLink(sessionKey, name string) {
 	if name == "" || e.listGlobalProvidersFunc == nil {
 		return
 	}
-	agentType := e.agent.Name()
+	agent, _ := e.sessionContextForKey(sessionKey)
+	agentType := agent.Name()
 	globals, err := e.listGlobalProvidersFunc(agentType)
 	if err != nil {
 		slog.Warn("provider link: list global providers", "error", err)
@@ -14259,7 +14328,7 @@ func (e *Engine) executeProviderLink(sessionKey, name string) {
 		return
 	}
 
-	sw, ok := e.agent.(ProviderSwitcher)
+	sw, ok := agent.(ProviderSwitcher)
 	if !ok {
 		return
 	}

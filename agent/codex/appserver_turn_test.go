@@ -123,6 +123,75 @@ type turnStartReplyWriter struct {
 func (w *turnStartReplyWriter) Write(p []byte) (int, error) { return w.write(p) }
 func (w *turnStartReplyWriter) Close() error                { return nil }
 
+func TestAppServerSession_SetLiveReasoningEffortPreservesThread(t *testing.T) {
+	for _, tt := range []struct{ effort, want string }{
+		{"high", "high"}, {" HIGH ", "high"}, {"med", "medium"}, {"very-high", "xhigh"},
+	} {
+		t.Run(tt.effort, func(t *testing.T) {
+			s := newTurnTestSession()
+			s.effort = "low"
+			if !s.SetLiveReasoningEffort(tt.effort) {
+				t.Fatal("live session rejected reasoning effort")
+			}
+			if got := s.GetReasoningEffort(); got != tt.want {
+				t.Fatalf("effort = %q, want %q", got, tt.want)
+			}
+			if !s.Alive() || s.CurrentSessionID() != "parent-thread" {
+				t.Fatal("reasoning change lost the live thread")
+			}
+		})
+	}
+}
+
+func TestAppServerSession_SetLiveReasoningEffortRequiresLiveThread(t *testing.T) {
+	for _, state := range []string{"closed", "no thread"} {
+		t.Run(state, func(t *testing.T) {
+			s := newTurnTestSession()
+			s.effort = "low"
+			if state == "closed" {
+				s.alive.Store(false)
+			} else {
+				s.threadID.Store("")
+			}
+			if s.SetLiveReasoningEffort("high") {
+				t.Fatal("accepted reasoning effort without a live thread")
+			}
+			if got := s.GetReasoningEffort(); got != "low" {
+				t.Fatalf("rejected change updated effort to %q", got)
+			}
+		})
+	}
+}
+
+func TestAppServerSession_SendUsesLiveReasoningEffort(t *testing.T) {
+	s := newTurnTestSession()
+	s.effort = "low"
+	if !s.SetLiveReasoningEffort("high") {
+		t.Fatal("live session rejected reasoning effort")
+	}
+	var method string
+	var params map[string]any
+	s.stdin = &turnStartReplyWriter{write: func(p []byte) (int, error) {
+		var req struct {
+			ID     int64          `json:"id"`
+			Method string         `json:"method"`
+			Params map[string]any `json:"params"`
+		}
+		if err := json.Unmarshal(p, &req); err != nil {
+			return 0, err
+		}
+		method, params = req.Method, req.Params
+		s.handleResponse(rpcResponseEnvelope{ID: req.ID, Result: json.RawMessage(`{"turn":{"id":"next-turn"}}`)})
+		return len(p), nil
+	}}
+	if err := s.Send("hello", "message", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if method != "turn/start" || params["effort"] != "high" || params["threadId"] != "parent-thread" {
+		t.Fatalf("request = %q %#v, want turn/start with high effort on parent-thread", method, params)
+	}
+}
+
 func TestAppServerSession_StartResponsePreservesEarlyTurnEvents(t *testing.T) {
 	for _, completeBeforeReply := range []bool{false, true} {
 		t.Run(fmt.Sprint("completed_before_reply=", completeBeforeReply), func(t *testing.T) {

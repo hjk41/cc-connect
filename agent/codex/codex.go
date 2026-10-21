@@ -34,6 +34,7 @@ func init() {
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
 	workDir         string
+	modelPinned     bool // SetModel overrides the active provider default
 	model           string
 	reasoningEffort string
 	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
@@ -192,12 +193,16 @@ func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.model = model
+	a.modelPinned = true
 	slog.Info("codex: model changed", "model", model)
 }
 
 func (a *Agent) GetModel() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.modelPinned {
+		return a.model
+	}
 	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
 }
 
@@ -217,6 +222,11 @@ func (a *Agent) GetReasoningEffort() string {
 func (a *Agent) AvailableReasoningEfforts() []string {
 	return []string{"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
 }
+
+var _ core.ResumeReasoningApplier = (*Agent)(nil)
+
+// Both backends apply the configured effort when resuming a conversation.
+func (a *Agent) AppliesReasoningOnResume() bool { return true }
 
 func (a *Agent) configuredModels() []core.ModelOption {
 	a.mu.RLock()
@@ -524,7 +534,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	var baseURL string
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
-		if m := a.providers[a.activeIdx].Model; m != "" {
+		if m := a.providers[a.activeIdx].Model; !a.modelPinned && m != "" {
 			model = m
 		}
 		baseURL = a.providers[a.activeIdx].BaseURL
@@ -616,6 +626,20 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if a.codexHome != "" {
 		opts["codex_home"] = a.codexHome
 	}
+	if a.systemPrompt != "" {
+		opts["system_prompt"] = a.systemPrompt
+	}
+	if a.appendPrompt != "" {
+		opts["append_system_prompt"] = a.appendPrompt
+	}
+	if len(a.configEnv) > 0 {
+		env := make(map[string]string, len(a.configEnv))
+		for _, kv := range a.configEnv {
+			k, v, _ := strings.Cut(kv, "=")
+			env[k] = v
+		}
+		opts["env"] = env
+	}
 	return opts
 }
 
@@ -635,10 +659,15 @@ func (a *Agent) SkillDirs() []string {
 
 // ── ContextCompressor implementation ──────────────────────────
 
-// CompressCommand returns "" because Codex native slash commands (/compact, /clear)
-// are not reliably executed in exec/resume mode — they may be treated as plain text.
-// See: https://github.com/chenhg5/cc-connect/issues/378
-func (a *Agent) CompressCommand() string { return "" }
+// CompressCommand advertises native compaction only on the app-server backend.
+func (a *Agent) CompressCommand() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.backend == "app_server" {
+		return "/compact"
+	}
+	return ""
+}
 
 func codexSkillDirs(workDir, explicitCodexHome string) []string {
 	homeDir, _ := os.UserHomeDir()
@@ -776,12 +805,14 @@ func (a *Agent) SetActiveProvider(name string) bool {
 	defer a.mu.Unlock()
 	if name == "" {
 		a.activeIdx = -1
+		a.modelPinned = false
 		slog.Info("codex: provider cleared")
 		return true
 	}
 	for i, p := range a.providers {
 		if p.Name == name {
 			a.activeIdx = i
+			a.modelPinned = false
 			slog.Info("codex: provider switched", "provider", name)
 			return true
 		}

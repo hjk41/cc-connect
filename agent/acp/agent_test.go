@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -134,5 +135,26 @@ func TestProbeSpawn_UsesProbeCommand(t *testing.T) {
 	_, _, _, err := a.probeSpawn(context.Background(), t.TempDir(), nil)
 	if err == nil || !strings.Contains(err.Error(), "/nonexistent/acp-probe-bin") {
 		t.Fatalf("probeSpawn err = %v, want it to start ProbeCommand", err)
+	}
+}
+
+func TestWorkspaceAgentOptions_RoundTripsWrapperArgs(t *testing.T) {
+	raw, err := New(map[string]any{"cmd": []string{"go", "wrapper arg", "--stdio"}, "args": []string{"acp"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := raw.(*Agent)
+	opts := parent.WorkspaceAgentOptions()
+	childRaw, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := childRaw.(*Agent)
+	if child.cmd != parent.cmd || !reflect.DeepEqual(child.cliExtraArgs, parent.cliExtraArgs) || !reflect.DeepEqual(child.args, parent.args) {
+		t.Fatalf("wrapper command lost: cmd=%s extra=%v args=%v", child.cmd, child.cliExtraArgs, child.args)
+	}
+	opts["cmd"].([]string)[1] = "changed"
+	if parent.cliExtraArgs[0] != "wrapper arg" {
+		t.Fatal("snapshot aliases parent args")
 	}
 }

@@ -39,6 +39,53 @@ func agentWithCatalog(model string) *Agent {
 	}
 }
 
+func TestStartSession_ResumeUsesNewReasoningEffortModel(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.txt")
+	script := testutil.Shell(t, filepath.Join(dir, "agent"),
+		"#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CURSOR_REASONING_ARGS_FILE\"\nprintf '%s\\n' '{\"type\":\"result\",\"result\":\"done\"}'\n")
+	t.Setenv("CURSOR_REASONING_ARGS_FILE", argsFile)
+	a := agentWithCatalog("grok-4.7-low")
+	a.cmd, a.workDir = script, dir
+	a.SetReasoningEffort("high")
+	applier, ok := any(a).(core.ResumeReasoningApplier)
+	if !ok || !applier.AppliesReasoningOnResume() {
+		t.Fatal("Cursor must apply reasoning effort when resuming")
+	}
+	session, err := a.StartSession(context.Background(), "existing-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if got := session.(*cursorSession).model; got != "grok-4.7-high" {
+		t.Fatalf("resumed model = %q, want grok-4.7-high", got)
+	}
+	if err := session.Send("hello", "message", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	events := collectUntilTerminal(t, session.(*cursorSession))
+	if events[len(events)-1].Type != core.EventResult {
+		t.Fatalf("resume failed: %#v", events)
+	}
+	data, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := strings.Split(strings.TrimSpace(string(data)), "\n")
+	for flag, want := range map[string]string{"--resume": "existing-chat", "--model": "grok-4.7-high"} {
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == flag && args[i+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s %s in %v", flag, want, args)
+		}
+	}
+}
+
 func TestLaunchModel_EffortMappingAndProviderOverride(t *testing.T) {
 	a := agentWithCatalog("grok-4.7")
 	a.reasoningEffort = "high"

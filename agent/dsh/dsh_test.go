@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -445,5 +446,25 @@ func TestFindSessionDir_FileRootIsReadError(t *testing.T) {
 	_, _, err := agent.findSessionDir("22222222-2222-2222-2222-222222222222")
 	if err == nil || errors.Is(err, errSessionNotFound) {
 		t.Fatalf("file root must preserve a read error, got %v", err)
+	}
+}
+
+func TestWorkspaceAgentOptions_KeepsWrapperCLIArgs(t *testing.T) {
+	raw, err := New(map[string]any{"cmd": []string{"go", "wrapper arg", "--stdio"}, "models_cmd": "/nonexistent/models"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := raw.(*Agent).WorkspaceAgentOptions()
+	want := []string{"go", "wrapper arg", "--stdio"}
+	if !reflect.DeepEqual(opts["cmd"], want) {
+		t.Fatalf("snapshot cmd = %#v, want %v", opts["cmd"], want)
+	}
+
+	child, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := child.(*Agent).WorkspaceAgentOptions()["cmd"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("recreated wrapper cmd = %#v", got)
 	}
 }

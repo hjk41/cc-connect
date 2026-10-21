@@ -156,13 +156,8 @@ func defaultProfile(profile string) string {
 }
 
 func cmdConfigured(opts map[string]any) bool {
-	if s, ok := opts["cmd"].(string); ok && strings.TrimSpace(s) != "" {
-		return true
-	}
-	if s, ok := opts["command"].(string); ok && strings.TrimSpace(s) != "" {
-		return true
-	}
-	return false
+	cmd, _ := core.ParseCmdOpts(opts, "")
+	return cmd != ""
 }
 
 func cloneOpts(opts map[string]any) map[string]any {

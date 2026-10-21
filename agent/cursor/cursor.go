@@ -149,6 +149,11 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return newCursorSession(ctx, cmd, extraArgs, workDir, a.launchModel(ctx), mode, sessionID, extraEnv)
 }
 
+var _ core.ResumeReasoningApplier = (*Agent)(nil)
+
+// Resumed sessions receive the effort-bearing model through --model.
+func (a *Agent) AppliesReasoningOnResume() bool { return true }
+
 // ListSessions reads sessions from Cursor Agent CLI chat storage.
 // The CLI may store chats under ~/.cursor/chats or ~/.config/Cursor/chats
 // depending on XDG_CONFIG_HOME and platform; all known locations are scanned.
@@ -550,4 +555,26 @@ func countSessionMessages(dbPath, rootBlobID string) (int, string) {
 		}
 	}
 	return count, firstUser
+}
+
+var _ core.WorkspaceAgentOptionSnapshotter = (*Agent)(nil)
+
+func (a *Agent) WorkspaceAgentOptions() map[string]any {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	opts := map[string]any{
+		"cmd":              append([]string{a.cmd}, a.cliExtraArgs...),
+		"mode":             a.mode,
+		"model":            a.model,
+		"reasoning_effort": a.reasoningEffort,
+	}
+	if len(a.configEnv) > 0 {
+		env := make(map[string]string, len(a.configEnv))
+		for _, kv := range a.configEnv {
+			k, v, _ := strings.Cut(kv, "=")
+			env[k] = v
+		}
+		opts["env"] = env
+	}
+	return opts
 }

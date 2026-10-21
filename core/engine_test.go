@@ -5635,7 +5635,7 @@ func TestCmdReasoning_UsageListsAgentEfforts(t *testing.T) {
 	t.Run("card note", func(t *testing.T) {
 		agent := &stubModelModeAgent{reasoningEfforts: efforts}
 		e := NewEngine("test", agent, nil, "", LangEnglish)
-		card := e.renderReasoningCard()
+		card := e.renderReasoningCard("test:user1")
 
 		for _, element := range card.Elements {
 			if note, ok := element.(CardNote); ok && note.Text == wantUsage {
@@ -5691,6 +5691,42 @@ type resumeReasoningAgent struct {
 
 func (a *resumeReasoningAgent) AppliesReasoningOnResume() bool { return true }
 
+func TestApplyReasoningSelection_PreservesHistoryOnlyForResumeApplier(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		agent    Agent
+		preserve bool
+	}{
+		{"resume applier preserves conversation", &resumeReasoningAgent{}, true},
+		{"without applier clears conversation", &stubModelModeAgent{}, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			e := NewEngine("test", tt.agent, nil, "", LangEnglish)
+			key := "test:user1"
+			session := e.sessions.GetOrCreateActive(key)
+			session.SetAgentSessionID("existing-session", "stub")
+			session.AddHistory("user", "remember this question")
+			session.AddHistory("assistant", "remember this answer")
+			tt.agent.(ReasoningEffortSwitcher).SetReasoningEffort("high")
+			if e.applyReasoningSelection(key, e.sessions, tt.agent, "high") {
+				t.Fatal("reported live apply without a running session")
+			}
+			history := session.GetHistory(0)
+			if tt.preserve {
+				if session.GetAgentSessionID() != "existing-session" || len(history) != 2 {
+					t.Fatalf("conversation lost: id=%q history=%v", session.GetAgentSessionID(), history)
+				}
+				if history[0].Role != "user" || history[0].Content != "remember this question" ||
+					history[1].Role != "assistant" || history[1].Content != "remember this answer" {
+					t.Fatalf("history changed: %v", history)
+				}
+			} else if session.GetAgentSessionID() != "" || len(history) != 0 {
+				t.Fatalf("conversation should be cleared: id=%q history=%v", session.GetAgentSessionID(), history)
+			}
+		})
+	}
+}
+
 func TestCmdReasoning_LiveApplyKeepsSession(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
 	agent := &stubModelModeAgent{}
@@ -5744,7 +5780,8 @@ func TestCmdReasoning_ResumeApplierKeepsSession(t *testing.T) {
 	if len(session.GetHistory(0)) != 1 {
 		t.Fatalf("history len = %d, want 1", len(session.GetHistory(0)))
 	}
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "next message in this conversation") {
+	if len(p.sent) != 1 || p.sent[0] != e.i18n.Tf(MsgReasoningChangedOnResume, "low") ||
+		!strings.Contains(p.sent[0], "next message in this conversation") {
 		t.Fatalf("sent = %v", p.sent)
 	}
 	if strings.Contains(p.sent[0], "New sessions will use this setting") {
@@ -16879,5 +16916,298 @@ func TestProcessInteractiveEvents_StreamingCard_BareNoReply_Suppressed(t *testin
 	}
 	if strings.Contains(card.finalContent(), "NO_REPLY") {
 		t.Fatalf("silent reply leaked NO_REPLY into the streaming card: %q", card.finalContent())
+	}
+}
+
+// Workspace card paths must use the same agent and store as typed commands.
+func TestHandleCardNav_WorkspaceCapabilities(t *testing.T) {
+	for _, tc := range []struct{ command, initial, action, selected string }{
+		{"mode", "act:/mode yolo", "act:/mode default", "act:/mode default"},
+		{"reasoning", "act:/reasoning 3", "act:/reasoning low", "act:/reasoning 1"},
+		{"provider", "act:/provider workspace", "act:/provider other", "act:/provider other"},
+	} {
+		t.Run(tc.command, func(t *testing.T) {
+			p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+			global := &stubModelModeAgent{mode: "default", reasoningEffort: "low", active: "global", providers: []ProviderConfig{{Name: "global"}}}
+			e := NewEngine("test", global, []Platform{p}, "", LangEnglish)
+			e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+			dir := normalizeWorkspacePath(t.TempDir())
+			key := "feishu:workspace-cards:u1"
+			e.workspaceBindings.Bind("project:test", "workspace-cards", "chan", dir)
+			ws := e.workspacePool.GetOrCreate(dir)
+			local := &stubModelModeAgent{mode: "yolo", reasoningEffort: "high", active: "workspace", providers: []ProviderConfig{{Name: "workspace"}, {Name: "other"}}}
+			ws.agent = local
+			store := filepath.Join(t.TempDir(), "sessions.json")
+			ws.sessions = NewSessionManager(store)
+			localSession := ws.sessions.GetOrCreateActive(key)
+			localSession.SetAgentSessionID("local-session", "stub")
+			localSession.AddHistory("user", "local history")
+			ws.sessions.Save()
+			globalSession := e.sessions.GetOrCreateActive(key)
+			globalSession.SetAgentSessionID("global-session", "stub")
+			globalSession.AddHistory("user", "global history")
+			assertSelected := func(card *Card, want string) {
+				t.Helper()
+				if card != nil {
+					for _, el := range card.Elements {
+						if selectEl, ok := el.(CardSelect); ok && selectEl.InitValue == want {
+							return
+						}
+					}
+				}
+				t.Fatalf("card = %#v, want selection %q", card, want)
+			}
+			assertSelected(e.handleCardNav("nav:/"+tc.command, key), tc.initial)
+			// Typed commands use these renderers too.
+			msg := &Message{SessionKey: key, ReplyCtx: "ctx"}
+			switch tc.command {
+			case "mode":
+				e.cmdMode(p, msg, nil)
+			case "reasoning":
+				e.cmdReasoning(p, msg, nil)
+			case "provider":
+				e.cmdProvider(p, msg, nil)
+			}
+			if len(p.repliedCards) != 1 {
+				t.Fatalf("typed command cards = %d", len(p.repliedCards))
+			}
+			assertSelected(p.repliedCards[0], tc.initial)
+			savedGlobalProvider := false
+			e.providerSaveFunc = func(string) error { savedGlobalProvider = true; return nil }
+			assertSelected(e.handleCardNav(tc.action, key), tc.selected)
+			if savedGlobalProvider {
+				t.Fatal("workspace card action saved global provider config")
+			}
+			if global.mode != "default" || global.reasoningEffort != "low" || global.active != "global" {
+				t.Fatal("card action mutated global agent")
+			}
+			if globalSession.GetAgentSessionID() != "global-session" || len(globalSession.GetHistory(0)) != 1 {
+				t.Fatal("card action mutated global session")
+			}
+			if localSession.GetAgentSessionID() != "" || len(localSession.GetHistory(0)) != 0 {
+				t.Fatal("card action did not reset workspace session")
+			}
+			saved := NewSessionManager(store).GetOrCreateActive(key)
+			if tc.command == "provider" && localSession.GetActiveProvider() != "other" {
+				t.Fatal("workspace session provider choice was not updated")
+			}
+			if saved.GetAgentSessionID() != "" || len(saved.GetHistory(0)) != 0 {
+				t.Fatal("workspace session reset was not saved")
+			}
+		})
+	}
+}
+
+type pinnedWorkspaceModelAgent struct {
+	namedStubModelModeAgent
+	pinned bool
+}
+
+func (a *pinnedWorkspaceModelAgent) SetModel(model string) { a.model = model; a.pinned = true }
+func (a *pinnedWorkspaceModelAgent) GetModel() string {
+	if !a.pinned {
+		if provider := a.GetActiveProvider(); provider != nil && provider.Model != "" {
+			return provider.Model
+		}
+	}
+	return a.model
+}
+func (a *pinnedWorkspaceModelAgent) SetActiveProvider(name string) bool {
+	if !a.stubModelModeAgent.SetActiveProvider(name) {
+		return false
+	}
+	a.pinned = false
+	return true
+}
+
+func TestGetOrCreateWorkspaceAgent_ReapPreservesPinnedModelOverProvider(t *testing.T) {
+	const name = "test-workspace-pinned-model"
+	RegisterAgent(name, func(opts map[string]any) (Agent, error) {
+		a := &pinnedWorkspaceModelAgent{namedStubModelModeAgent: namedStubModelModeAgent{name: name}}
+		a.model, _ = opts["model"].(string)
+		return a, nil
+	})
+	global := &pinnedWorkspaceModelAgent{namedStubModelModeAgent: namedStubModelModeAgent{name: name, stubModelModeAgent: stubModelModeAgent{
+		model: "configured", active: "provider", providers: []ProviderConfig{{Name: "provider", Model: "provider-default"}},
+	}}}
+	e := NewEngine("test", global, nil, "", LangEnglish)
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	e.SetProjectStateStore(NewProjectStateStore(statePath))
+	dir := normalizeWorkspacePath(t.TempDir())
+	e.projectState.SetWorkspaceModelOverride(dir, "persisted-override")
+	e.projectState.Save()
+	e.SetProjectStateStore(NewProjectStateStore(statePath))
+	for i := 0; i < 2; i++ {
+		local, _, err := e.getOrCreateWorkspaceAgent(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := local.(ModelSwitcher).GetModel(); got != "persisted-override" {
+			t.Fatalf("workspace model = %q after creation %d", got, i)
+		}
+		if local.(ProviderSwitcher).GetActiveProvider().Model != "provider-default" {
+			t.Fatal("workspace provider default mutated")
+		}
+		ws := e.workspacePool.GetOrCreate(dir)
+		ws.mu.Lock()
+		ws.agent = nil
+		ws.sessions = nil
+		ws.mu.Unlock()
+	}
+	if global.GetModel() != "provider-default" || global.pinned {
+		t.Fatal("workspace model override mutated parent")
+	}
+}
+
+func TestCompress_WorkspaceAgentForManualAndAutomatic(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		auto         bool
+		localCommand string
+	}{
+		{"manual", false, "/workspace-compact"},
+		{"auto", true, "/workspace-compact"},
+		{"auto-disabled-in-workspace", true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &stubPlatformEngine{n: "feishu"}
+			e := NewEngine("test", &stubCompressorAgent{cmd: "/global-compact"}, []Platform{p}, "", LangEnglish)
+			e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+			dir := normalizeWorkspacePath(t.TempDir())
+			key := "feishu:workspace-compress:u1"
+			e.workspaceBindings.Bind("project:test", "workspace-compress", "chan", dir)
+			ws := e.workspacePool.GetOrCreate(dir)
+			ws.agent = &stubCompressorAgent{cmd: tc.localCommand}
+			ws.sessions = NewSessionManager("")
+			sess := newQueuingSession("workspace-compress")
+			sess.contextUsage = &ContextUsage{UsedTokens: 50_000, ContextWindow: 200_000}
+			state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx"}
+			defer state.markStopped()
+			interactiveKey := e.interactiveKeyForSessionKey(key)
+			e.interactiveStates[interactiveKey] = state
+			session := ws.sessions.GetOrCreateActive(key)
+			session.AddHistory("user", "hello")
+			var done chan struct{}
+			if tc.auto {
+				e.SetAutoCompressConfig(true, 4, 0)
+				done = make(chan struct{})
+				go func() {
+					defer close(done)
+					e.processInteractiveEvents(state, session, ws.sessions, interactiveKey, "msg1", time.Now(), func() {}, nil, nil, 0)
+				}()
+				sess.events <- Event{Type: EventResult, Content: "response", Done: true}
+			} else {
+				e.cmdCompress(p, &Message{SessionKey: key, ReplyCtx: "ctx"})
+			}
+			if tc.localCommand == "" {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("turn did not finish")
+				}
+				sess.sendMu.Lock()
+				defer sess.sendMu.Unlock()
+				if len(sess.sendCalls) != 0 {
+					t.Fatalf("workspace without compression used global command: %v", sess.sendCalls)
+				}
+				return
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			var command string
+			for time.Now().Before(deadline) {
+				sess.sendMu.Lock()
+				if len(sess.sendCalls) > 0 {
+					command = sess.sendCalls[0]
+				}
+				sess.sendMu.Unlock()
+				if command != "" {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			// Finish compression so the reader and session lock are released.
+			sess.events <- Event{Type: EventResult, Done: true}
+			if done != nil {
+				select {
+				case <-done:
+				case <-time.After(2 * time.Second):
+					t.Fatal("auto compression did not finish")
+				}
+			}
+			if command != tc.localCommand {
+				t.Fatalf("compress command = %q, want %q", command, tc.localCommand)
+			}
+		})
+	}
+}
+
+func TestProviderCardAddAndLink_UseWorkspaceAgent(t *testing.T) {
+	p := &stubPlatformEngine{n: "feishu"}
+	global := &stubProviderAgent{providers: []ProviderConfig{{Name: "global"}}, active: "global"}
+	e := NewEngine("test", global, []Platform{p}, "", LangEnglish)
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+	dir := normalizeWorkspacePath(t.TempDir())
+	key := "feishu:provider-add-workspace:u1"
+	e.workspaceBindings.Bind("project:test", "provider-add-workspace", "chan", dir)
+	ws := e.workspacePool.GetOrCreate(dir)
+	local := &stubProviderAgent{}
+	ws.agent = local
+	ws.sessions = NewSessionManager("")
+	e.executeCardAction("/provider/add-other", "", key)
+	if !e.handlePendingProviderAdd(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, "added test-key", "") {
+		t.Fatal("card add input was not consumed")
+	}
+	if len(local.providers) != 1 || local.providers[0].Name != "added" {
+		t.Fatalf("workspace providers = %v", local.providers)
+	}
+	e.listGlobalProvidersFunc = func(string) ([]ProviderConfig, error) { return []ProviderConfig{{Name: "linked"}}, nil }
+	e.executeCardAction("/provider/link", "linked", key)
+	if len(local.providers) != 2 || local.providers[1].Name != "linked" {
+		t.Fatalf("workspace providers after link = %v", local.providers)
+	}
+	if len(global.providers) != 1 || global.providers[0].Name != "global" || global.active != "global" {
+		t.Fatal("workspace provider add/link mutated global agent")
+	}
+}
+
+// TestGetOrCreateWorkspaceAgent_UsesParentEffectiveModel guards the clone
+// path: WorkspaceAgentOptions records the configured model, but an active
+// provider may have supplied a different effective model. Re-applying the raw
+// snapshot after provider wiring would silently switch the clone's model.
+func TestGetOrCreateWorkspaceAgent_UsesParentEffectiveModel(t *testing.T) {
+	agentName := "test-workspace-effective-model"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		a := &namedStubWorkspaceOptionAgent{
+			namedStubModelModeAgent: namedStubModelModeAgent{name: agentName},
+			opts:                    map[string]any{},
+		}
+		if model, ok := opts["model"].(string); ok {
+			a.model = model
+		}
+		for k, v := range opts {
+			a.opts[k] = v
+		}
+		return a, nil
+	})
+
+	global := &namedStubWorkspaceOptionAgent{
+		namedStubModelModeAgent: namedStubModelModeAgent{
+			name: agentName,
+			stubModelModeAgent: stubModelModeAgent{
+				model: "provider-effective",
+			},
+		},
+		opts: map[string]any{"model": "snapshot-configured"},
+	}
+	e := NewEngine("test", global, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+	e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+
+	raw, _, err := e.getOrCreateWorkspaceAgent(normalizeWorkspacePath(t.TempDir()))
+	if err != nil {
+		t.Fatalf("getOrCreateWorkspaceAgent returned error: %v", err)
+	}
+	ws := raw.(*namedStubWorkspaceOptionAgent)
+	if got := ws.GetModel(); got != "provider-effective" {
+		t.Fatalf("workspace effective model = %q, want provider-effective", got)
 	}
 }

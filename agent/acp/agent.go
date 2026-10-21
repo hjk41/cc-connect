@@ -320,6 +320,10 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	opts := map[string]any{
 		"cmd": a.cmd,
 	}
+	if len(a.cliExtraArgs) > 0 {
+		opts["cmd"] = append([]string{a.cmd}, a.cliExtraArgs...)
+	}
+
 	if len(a.args) > 0 {
 		opts["args"] = append([]string(nil), a.args...)
 	}

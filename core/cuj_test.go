@@ -1529,6 +1529,32 @@ func TestCUJ_C5_StopKeepsSameSession(t *testing.T) {
 
 // CUJ-C6 · /mode switches permission mode; verified via i18n reply text.
 func TestCUJ_C6_ModeSwitchAcknowledged(t *testing.T) {
+	t.Run("WorkspaceModeCardMatchesTypedSelection", func(t *testing.T) {
+		p := &cujTextCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+		e := NewEngine("test", &stubModelModeAgent{mode: "default"}, []Platform{p}, "", LangEnglish)
+		e.SetMultiWorkspace(t.TempDir(), filepath.Join(t.TempDir(), "bindings.json"))
+		for _, channel := range []string{"channel-a", "channel-b"} {
+			dir := normalizeWorkspacePath(t.TempDir())
+			e.workspaceBindings.Bind("project:test", channel, "chan", dir)
+			ws := e.workspacePool.GetOrCreate(dir)
+			ws.agent = &stubModelModeAgent{mode: "default"}
+			ws.sessions = NewSessionManager("")
+		}
+		send := func(channel, content string) {
+			e.ReceiveMessage(p, &Message{SessionKey: "feishu:" + channel + ":u1", Platform: "feishu", ChannelKey: channel, UserID: "u1", Content: content, ReplyCtx: "ctx"})
+		}
+		send("channel-a", "/mode yolo")
+		send("channel-a", "/mode")
+		sent := p.getSent()
+		if len(sent) < 2 || !strings.Contains(sent[len(sent)-1], "▶ **YOLO**") {
+			t.Fatalf("workspace A card did not show selected mode: %v", sent)
+		}
+		send("channel-b", "/mode")
+		sent = p.getSent()
+		if !strings.Contains(sent[len(sent)-1], "▶ **Default**") {
+			t.Fatalf("workspace B card changed with A: %v", sent)
+		}
+	})
 	env := newCUJEnv(t)
 	env.userSends("c6", "hi")
 	env.waitFor("turn1", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
@@ -2873,4 +2899,14 @@ func TestCUJ_ProgressCardFailureStaysBounded(t *testing.T) {
 	if got := len(p.getSent()); got > 8 {
 		t.Fatalf("following turn grew the chat to %d messages: %#v", got, p.getSent())
 	}
+}
+
+// Render the card on the platform's visible text surface for CUJ assertions.
+type cujTextCardPlatform struct{ stubPlatformEngine }
+
+func (p *cujTextCardPlatform) ReplyCard(ctx context.Context, replyCtx any, card *Card) error {
+	return p.Reply(ctx, replyCtx, card.RenderText())
+}
+func (p *cujTextCardPlatform) SendCard(ctx context.Context, replyCtx any, card *Card) error {
+	return p.Send(ctx, replyCtx, card.RenderText())
 }

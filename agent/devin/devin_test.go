@@ -2,6 +2,7 @@ package devin
 
 import (
 	"os/exec"
+	"reflect"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/agent/acp"
@@ -141,5 +142,26 @@ func TestNew_DisplayNameOverride(t *testing.T) {
 	}
 	if got := a.(*Agent).CLIDisplayName(); got != "Devin (prod)" {
 		t.Fatalf("CLIDisplayName() = %q, want %q", got, "Devin (prod)")
+	}
+}
+
+func TestWorkspaceAgentOptions_KeepsWrapperCLIArgs(t *testing.T) {
+	raw, err := New(map[string]any{"cmd": []string{"go", "wrapper arg", "--stdio"}, "models_cmd": "/nonexistent/models"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := raw.(*Agent).WorkspaceAgentOptions()
+	want := []string{"go", "wrapper arg", "--stdio"}
+	if !reflect.DeepEqual(opts["cmd"], want) {
+		t.Fatalf("snapshot cmd = %#v, want %v", opts["cmd"], want)
+	}
+	opts["models_cmd"] = "/nonexistent/models"
+
+	child, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := child.(*Agent).WorkspaceAgentOptions()["cmd"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("recreated wrapper cmd = %#v", got)
 	}
 }

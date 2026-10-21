@@ -59,10 +59,11 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 }
 
 func (a *Agent) readOAuthTokens(readFile func(string) ([]byte, error)) (codexOAuthTokens, error) {
-	path, err := codexAuthPath()
+	home, err := a.effectiveCodexHome()
 	if err != nil {
 		return codexOAuthTokens{}, err
 	}
+	path := filepath.Join(home, "auth.json")
 	data, err := readFile(path)
 	if err != nil {
 		return codexOAuthTokens{}, fmt.Errorf("read %s: %w", path, err)
@@ -182,14 +183,16 @@ func mapCodexUsageWindows(bucket *codexUsageBucket) []core.UsageWindow {
 	return windows
 }
 
-func codexAuthPath() (string, error) {
-	codexHome := os.Getenv("CODEX_HOME")
-	if codexHome == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		codexHome = filepath.Join(home, ".codex")
+// effectiveCodexHome follows StartSession's last-wins child environment order.
+func (a *Agent) effectiveCodexHome() (string, error) {
+	a.mu.RLock()
+	home := a.codexHome
+	env := append([]string(nil), a.configEnv...)
+	env = append(env, a.providerEnvLocked()...)
+	env = append(env, a.sessionEnv...)
+	a.mu.RUnlock()
+	if home != "" {
+		return home, nil
 	}
-	return filepath.Join(codexHome, "auth.json"), nil
+	return resolveCodexHome(env)
 }

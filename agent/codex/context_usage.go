@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -161,14 +162,23 @@ func getenvFromList(env []string, key string) string {
 }
 
 func findSessionFileInCodexHome(codexHome, sessionID string) string {
-	if strings.TrimSpace(codexHome) == "" || strings.TrimSpace(sessionID) == "" {
+	if strings.TrimSpace(codexHome) == "" || strings.TrimSpace(sessionID) == "" || strings.ContainsAny(sessionID, `/\*?[]`) {
 		return ""
 	}
 
 	pattern := filepath.Join(codexHome, "sessions", "*", "*", "*", "rollout-*"+sessionID+".jsonl")
 	if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+		filtered := matches[:0]
+		for _, path := range matches {
+			if rolloutMatchesSessionID(filepath.Base(path), sessionID) {
+				filtered = append(filtered, path)
+			}
+		}
+		matches = filtered
 		sort.Strings(matches)
-		return matches[len(matches)-1]
+		if len(matches) > 0 {
+			return matches[len(matches)-1]
+		}
 	}
 
 	sessionsDir := filepath.Join(codexHome, "sessions")
@@ -177,12 +187,28 @@ func findSessionFileInCodexHome(codexHome, sessionID string) string {
 		if err != nil || info == nil || info.IsDir() || found != "" {
 			return nil
 		}
-		if strings.Contains(filepath.Base(path), sessionID) {
+		if rolloutMatchesSessionID(filepath.Base(path), sessionID) {
 			found = path
 		}
 		return nil
 	})
 	return found
+}
+
+// Rollouts use either rollout-ID.jsonl or rollout-TIMESTAMP-ID.jsonl.
+// Compare the entire ID, including for non-UUID IDs used by older clients.
+func rolloutMatchesSessionID(name, sessionID string) bool {
+	if name == "rollout-"+sessionID+".jsonl" {
+		return true
+	}
+	stem := strings.TrimPrefix(name, "rollout-")
+	if stem == name || len(stem) < 20 || stem[19] != '-' {
+		return false
+	}
+	if _, err := time.Parse("2006-01-02T15-04-05", stem[:19]); err != nil {
+		return false
+	}
+	return stem[20:] == sessionID+".jsonl"
 }
 
 func readContextUsageFromRollout(path string) (*core.ContextUsage, error) {

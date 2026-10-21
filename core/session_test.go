@@ -1204,3 +1204,20 @@ func TestSession_ForceUnlock(t *testing.T) {
 		t.Fatal("ForceUnlock on an unlocked session must be a no-op (false)")
 	}
 }
+
+// TestSessionManager_PersistsActiveProvider guards the provider choice stored
+// on a session. Without it a `/provider` switch survives only until the next
+// process restart, because saveLocked rebuilds the snapshot field by field.
+func TestSessionManager_PersistsActiveProvider(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.json")
+	sm := NewSessionManager(path)
+	s := sm.GetOrCreateActive("user1")
+	s.SetActiveProvider("minimax")
+	sm.Save()
+
+	reloaded := NewSessionManager(path)
+	got := reloaded.GetOrCreateActive("user1").GetActiveProvider()
+	if got != "minimax" {
+		t.Fatalf("ActiveProvider after reload = %q, want minimax", got)
+	}
+}

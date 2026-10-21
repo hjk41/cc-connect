@@ -1,6 +1,7 @@
 package claudecode
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,37 @@ import (
 
 	"github.com/chenhg5/cc-connect/core"
 )
+
+func TestStartSession_ResumeUsesNewReasoningEffort(t *testing.T) {
+	a := &Agent{
+		cmd: os.Args[0], workDir: t.TempDir(), activeIdx: -1, reasoningEffort: "low",
+		cliExtraArgs: []string{"-test.run=TestHelperProcess", "--", "stdin-eof-exit"},
+		sessionEnv:   []string{"GO_WANT_HELPER_PROCESS=1"},
+	}
+	a.SetReasoningEffort("high")
+	applier, ok := any(a).(core.ResumeReasoningApplier)
+	if !ok || !applier.AppliesReasoningOnResume() {
+		t.Fatal("Claude Code must apply reasoning effort when resuming")
+	}
+	session, err := a.StartSession(context.Background(), "existing-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	args := session.(*claudeSession).cmd.Args
+	for flag, want := range map[string]string{"--resume": "existing-session", "--effort": "high"} {
+		found := false
+		for i := 0; i+1 < len(args); i++ {
+			if args[i] == flag && args[i+1] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("missing %s %s in %v", flag, want, args)
+		}
+	}
+}
 
 func TestNew_ParsesRunAsUserAndRunAsEnv(t *testing.T) {
 	opts := map[string]any{

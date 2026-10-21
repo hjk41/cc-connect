@@ -35,25 +35,26 @@ func init() {
 //   - "auto":              Claude's automatic permission classifier
 //   - "bypassPermissions": auto-approve everything (alias: yolo)
 type Agent struct {
-	workDir          string
-	cmd              string   // CLI binary name (default: "claude")
-	cliExtraArgs     []string // extra args parsed from cmd (e.g. ["code", "-t", "foo"])
-	configEnv        []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
-	cmdArgsFlag      string   // if set, claude args are passed as a single string via this flag (e.g. "-a")
-	model            string
-	reasoningEffort  string // "low" | "medium" | "high" | "max"
-	mode             string // "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions" | "dontAsk"
-	allowedTools     []string
-	disallowedTools  []string
+	workDir             string
+	cmd                 string   // CLI binary name (default: "claude")
+	cliExtraArgs        []string // extra args parsed from cmd (e.g. ["code", "-t", "foo"])
+	configEnv           []string // env vars from [projects.agent.options.env] — persists across SetSessionEnv calls
+	cmdArgsFlag         string   // if set, claude args are passed as a single string via this flag (e.g. "-a")
+	modelPinned         bool     // SetModel overrides the active provider default
+	model               string
+	reasoningEffort     string // "low" | "medium" | "high" | "max"
+	mode                string // "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions" | "dontAsk"
+	allowedTools        []string
+	disallowedTools     []string
 	maxContextTokens    int // optional: passed as --max-context-tokens when > 0
 	contextWindowTokens int // optional: override the context-window-size heuristic used by the ctx% indicator. When <= 0, fall back to model-name heuristics.
 	providers           []core.ProviderConfig
-	activeIdx        int // -1 = no provider set
-	sessionEnv       []string
-	routerURL        string   // Claude Code Router URL (e.g., "http://127.0.0.1:3456")
-	routerAPIKey     string   // Claude Code Router API key (optional)
-	systemPrompt     string   // Custom system prompt to pass to Claude CLI
-	pluginDirs       []string // Plugin directories to load via --plugin-dir (repeatable)
+	activeIdx           int // -1 = no provider set
+	sessionEnv          []string
+	routerURL           string   // Claude Code Router URL (e.g., "http://127.0.0.1:3456")
+	routerAPIKey        string   // Claude Code Router API key (optional)
+	systemPrompt        string   // Custom system prompt to pass to Claude CLI
+	pluginDirs          []string // Plugin directories to load via --plugin-dir (repeatable)
 
 	appendSystemPrompt string // Custom text appended to the system prompt (keeps Claude's default)
 
@@ -374,12 +375,16 @@ func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.model = model
+	a.modelPinned = true
 	slog.Info("claudecode: model changed", "model", model)
 }
 
 func (a *Agent) GetModel() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.modelPinned {
+		return a.model
+	}
 	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
 }
 
@@ -399,6 +404,11 @@ func (a *Agent) GetReasoningEffort() string {
 func (a *Agent) AvailableReasoningEfforts() []string {
 	return []string{"low", "medium", "high", "max"}
 }
+
+var _ core.ResumeReasoningApplier = (*Agent)(nil)
+
+// Resumed sessions receive the configured effort through --effort.
+func (a *Agent) AppliesReasoningOnResume() bool { return true }
 
 func (a *Agent) configuredModels() []core.ModelOption {
 	a.mu.RLock()
@@ -557,7 +567,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	var activeProviderName string
 	if activeIdx >= 0 && activeIdx < len(a.providers) {
 		activeProviderName = a.providers[activeIdx].Name
-		if m := a.providers[activeIdx].Model; m != "" {
+		if m := a.providers[activeIdx].Model; !a.modelPinned && m != "" {
 			model = m
 		}
 	}
@@ -962,6 +972,12 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if len(a.pluginDirs) > 0 {
 		opts["plugin_dir"] = stringsToAny(a.pluginDirs)
 	}
+	if a.systemPrompt != "" {
+		opts["system_prompt"] = a.systemPrompt
+	}
+	if a.appendSystemPrompt != "" {
+		opts["append_system_prompt"] = a.appendSystemPrompt
+	}
 	return opts
 }
 
@@ -1200,12 +1216,14 @@ func (a *Agent) SetActiveProvider(name string) bool {
 	a.stopProviderProxyLocked()
 	if name == "" {
 		a.activeIdx = -1
+		a.modelPinned = false
 		slog.Info("claudecode: provider cleared")
 		return true
 	}
 	for i, p := range a.providers {
 		if p.Name == name {
 			a.activeIdx = i
+			a.modelPinned = false
 			slog.Info("claudecode: provider switched", "provider", name)
 			return true
 		}
