@@ -749,6 +749,8 @@ func TestAvailableModels_BackgroundRefreshUpdatesDiskCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	// The second cache read may launch another refresh; reap it before TempDir cleanup.
+	t.Cleanup(func() { agent.(*Agent).refreshWg.Wait() })
 	switcher, ok := agent.(core.ModelSwitcher)
 	if !ok {
 		t.Fatalf("New() agent does not implement core.ModelSwitcher")
