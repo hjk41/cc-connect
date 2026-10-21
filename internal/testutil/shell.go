@@ -34,25 +34,26 @@ func Shell(t *testing.T, path, script string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Link(src, path); err != nil {
-		in, err := os.Open(src)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer func() { _ = in.Close() }()
-		out, err := os.Create(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, copyErr := io.Copy(out, in)
-		closeErr := out.Close()
-		if copyErr != nil {
-			t.Fatal(copyErr)
-		}
-		if closeErr != nil {
-			t.Fatal(closeErr)
-		}
+	// Windows locks every hard link to a running image, including the parent
+	// test executable. Copy so completed fixtures can be removed independently.
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer func() { _ = in.Close() }()
+	out, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, copyErr := io.Copy(out, in)
+	closeErr := out.Close()
+	if copyErr != nil {
+		t.Fatal(copyErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+
 	if err := os.WriteFile(path+".shell-fixture", []byte(script), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +72,10 @@ func RunShellHelper() {
 	path := exe + ".shell-fixture"
 	if _, err := os.Stat(path); err != nil {
 		return
+	}
+	if err := containShellProcess(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(126)
 	}
 	// Prefer Git Bash to the unrelated WSL bash launcher in System32.
 	bash := filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe")

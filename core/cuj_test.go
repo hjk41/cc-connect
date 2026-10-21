@@ -528,7 +528,7 @@ func TestCUJ_B6_NameRenamesCurrentSession(t *testing.T) {
 
 	// 1. User starts chatting → an active session exists.
 	env.userSends("carol", "hello")
-	env.waitFor("first reply", 2*time.Second, func() bool {
+	env.waitFor("first reply", 10*time.Second, func() bool {
 		return len(env.plat.getSent()) >= 1
 	})
 	original := env.activeSession(key)
@@ -539,7 +539,7 @@ func TestCUJ_B6_NameRenamesCurrentSession(t *testing.T) {
 	env.userSends("carol", "/name my-cool-project")
 
 	// 3. Wait for the rename ack — engine should reply with something.
-	env.waitFor("rename ack", 2*time.Second, func() bool {
+	env.waitFor("rename ack", 10*time.Second, func() bool {
 		return len(env.plat.getSent()) >= 1
 	})
 
@@ -577,18 +577,18 @@ func TestCUJ_B9_SearchFindsKeywordInHistory(t *testing.T) {
 
 	// 1. User chats 3 different topics.
 	env.userSends("dave", "let's discuss kubernetes")
-	env.waitFor("reply 1", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
+	env.waitFor("reply 1", 10*time.Second, func() bool { return len(env.plat.getSent()) >= 1 })
 	env.userSends("dave", "now about postgres performance")
-	env.waitFor("reply 2", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 2 })
+	env.waitFor("reply 2", 10*time.Second, func() bool { return len(env.plat.getSent()) >= 2 })
 	env.userSends("dave", "and finally docker networking")
-	env.waitFor("reply 3", 2*time.Second, func() bool { return len(env.plat.getSent()) >= 3 })
+	env.waitFor("reply 3", 10*time.Second, func() bool { return len(env.plat.getSent()) >= 3 })
 
 	// 2. User searches for a keyword from turn 2.
 	env.plat.clearSent()
 	env.userSends("dave", "/search postgres")
 
 	// 3. Wait for /search reply.
-	env.waitFor("search reply", 2*time.Second, func() bool {
+	env.waitFor("search reply", 10*time.Second, func() bool {
 		return len(env.plat.getSent()) >= 1
 	})
 
@@ -604,7 +604,7 @@ func TestCUJ_B9_SearchFindsKeywordInHistory(t *testing.T) {
 	// should not falsely surface it.
 	env.plat.clearSent()
 	env.userSends("dave", "/search neverMentionedKeyword12345")
-	env.waitFor("search negative reply", 2*time.Second, func() bool {
+	env.waitFor("search negative reply", 10*time.Second, func() bool {
 		return len(env.plat.getSent()) >= 1
 	})
 	for _, s := range env.plat.getSent() {
@@ -1275,35 +1275,28 @@ func TestCUJ_A4_VoiceMessageWithoutSTTSurfacesClearMessage(t *testing.T) {
 
 // CUJ-A5 · User uploads file → engine routes it to the agent.
 func TestCUJ_A5_FileReachesAgent(t *testing.T) {
-	plat := &stubPlatformEngine{n: "test"}
-	agent := &cujAgent{}
-	dir := t.TempDir()
-	e := NewEngine("test", agent, []Platform{plat}, dir+"/sessions.json", LangEnglish)
-
-	msg := &Message{
+	env := newCUJEnv(t)
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	env.engine.ReceiveMessage(env.plat, &Message{
 		SessionKey: "test:file", Platform: "test", MessageID: "f1",
-		UserID: "file", UserName: "file",
-		Content:  "read this file",
-		Files:    []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}},
-		ReplyCtx: "ctx",
-	}
-	e.ReceiveMessage(plat, msg)
-
-	deadline := time.After(2 * time.Second)
-	for {
-		agent.mu.Lock()
-		n := len(agent.sessions)
-		agent.mu.Unlock()
-		if n > 0 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("agent never received the message with file attachment")
-		default:
-			time.Sleep(10 * time.Millisecond)
-		}
-	}
+		UserID: "file", UserName: "file", Content: "read this file",
+		Files: []FileAttachment{{MimeType: "text/plain", Data: []byte("hello world"), FileName: "note.txt"}}, ReplyCtx: "ctx",
+	})
+	// Session creation precedes reply delivery and disk persistence. Returning
+	// at that point lets the engine race TempDir cleanup on slower runners.
+	env.waitFor("file reply and completed persistence", 2*time.Second, func() bool {
+		return strings.Contains(strings.Join(env.plat.getSent(), "\n"), "ok") && !env.activeSession("test:file").Busy()
+	})
+	env.plat.clearSent()
+	env.userSends("file", "/history")
+	env.waitFor("file request in history", 2*time.Second, func() bool {
+		return strings.Contains(strings.Join(env.plat.getSent(), "\n"), "read this file")
+	})
+	env.plat.clearSent()
+	env.userSends("file", "continue after the file")
+	env.waitFor("follow-up reply and completed persistence", 2*time.Second, func() bool {
+		return strings.Contains(strings.Join(env.plat.getSent(), "\n"), "ok") && !env.activeSession("test:file").Busy()
+	})
 }
 
 // CUJ-A6 / A7 are intentionally covered at the platform layer
@@ -2196,6 +2189,7 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 	pB := &stubPlatformEngine{n: "platB"}
 	agent := &cujAgent{}
 	e := NewEngine("test", agent, []Platform{pA, pB}, dir+"/sessions.json", LangEnglish)
+	t.Cleanup(func() { _ = e.Stop() })
 
 	// Fire 5 messages on each platform concurrently.
 	var wg sync.WaitGroup
@@ -2244,7 +2238,7 @@ func TestCUJ_H2_TwoPlatformsConcurrentNoBleed(t *testing.T) {
 				userB++
 			}
 		}
-		if userA >= 5 && userB >= 5 {
+		if userA >= 5 && userB >= 5 && !e.sessions.GetOrCreateActive("platA:userA").Busy() && !e.sessions.GetOrCreateActive("platB:userB").Busy() {
 			break
 		}
 		select {

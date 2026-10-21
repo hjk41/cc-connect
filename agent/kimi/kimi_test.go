@@ -3,6 +3,7 @@ package kimi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -168,7 +169,7 @@ func TestAgentStartSession(t *testing.T) {
 }
 
 func TestAgentMemoryAndSkill(t *testing.T) {
-	a := &Agent{workDir: "/tmp/my-project", activeIdx: -1}
+	a := &Agent{workDir: t.TempDir(), activeIdx: -1}
 
 	assert.Equal(t, filepath.Join(a.workDir, "AGENTS.md"), a.ProjectMemoryFile())
 	assert.NotEmpty(t, a.GlobalMemoryFile())
@@ -270,7 +271,7 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 	modernDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", "session_modern-1")
 	require.NoError(t, os.MkdirAll(modernDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(modernDir, "state.json"),
-		[]byte(`{"title":"modern chat","workDir":"`+workDir+`"}`), 0o644))
+		[]byte(fmt.Sprintf(`{"title":"modern chat","workDir":%q}`, workDir)), 0o644))
 	// Kimi Code stores the transcript at agents/main/wire.jsonl (no
 	// context.jsonl). Include tool/assistant events that must NOT be counted.
 	require.NoError(t, os.MkdirAll(filepath.Join(modernDir, "agents", "main"), 0o755))
@@ -338,7 +339,7 @@ func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
 	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", sessionID)
 	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "agents", "main"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "state.json"),
-		[]byte(`{"title":"wire chat","workDir":"`+workDir+`"}`), 0o644))
+		[]byte(fmt.Sprintf(`{"title":"wire chat","workDir":%q}`, workDir)), 0o644))
 
 	// Simulate a wire transcript: two user turns, some assistant/tool noise,
 	// punctuated by a non-append event that must be skipped.

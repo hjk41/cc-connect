@@ -220,8 +220,24 @@ func newMediaEngine(t *testing.T) (*core.Engine, *recordingAgent, *mediaPlatform
 	platform := &mediaPlatform{}
 	engine := core.NewEngine("release-media", agent, []core.Platform{platform}, t.TempDir()+"/sessions.json", core.LangEnglish)
 	t.Cleanup(func() {
-		engine.Stop()
+		_ = engine.Stop()
 		_ = agent.Stop()
+		// Stop cancels drains; their deferred persistence must finish before
+		// testing removes the session store, especially on Windows.
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			busy := false
+			for _, session := range engine.GetSessions().AllSessions() {
+				busy = busy || session.Busy()
+			}
+			if !busy {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("session drains did not finish after shutdown")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
 	})
 	return engine, agent, platform
 }
