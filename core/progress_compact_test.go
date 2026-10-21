@@ -642,6 +642,138 @@ func TestProgressWriter_ContextCanceledSendsNothing(t *testing.T) {
 	}
 }
 
+func TestProgressWriter_ToolResultSnapshotsReplaceInPlace(t *testing.T) {
+	p := &stubCompactProgressPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+		style:              "card",
+		supportPayload:     true,
+	}
+	w := newCompactProgressWriter(context.Background(), p, "ctx", "agent", LangEnglish, nil, 0, "Progress (live card unavailable)")
+	const id = "call-secret-id"
+	snaps := []struct {
+		text    string
+		partial bool
+	}{
+		{"alpha", true},
+		{"alpha\nbeta", true},
+		{"alpha\nbeta\ngamma", false},
+	}
+	for _, snap := range snaps {
+		if !w.AppendStructured(ProgressCardEntry{
+			Kind:       ProgressEntryToolResult,
+			Tool:       "Bash",
+			Text:       snap.text,
+			ToolCallID: id,
+			Partial:    snap.partial,
+		}, snap.text) {
+			t.Fatalf("append %q returned false", snap.text)
+		}
+	}
+	payloads := append(p.getPreviewStarts(), p.getPreviewEdits()...)
+	if len(payloads) != len(snaps) {
+		t.Fatalf("payloads = %d, want %d", len(payloads), len(snaps))
+	}
+	for i, raw := range payloads {
+		if strings.Contains(raw, id) {
+			t.Fatalf("platform payload leaked tool call id: %s", raw)
+		}
+		parsed, ok := ParseProgressCardPayload(raw)
+		if !ok {
+			t.Fatalf("payload %d did not parse", i)
+		}
+		var results []ProgressCardEntry
+		for _, item := range parsed.Items {
+			if item.Kind == ProgressEntryToolResult {
+				results = append(results, item)
+			}
+		}
+		if len(results) != 1 {
+			t.Fatalf("payload %d tool results = %d, want 1: %#v", i, len(results), parsed.Items)
+		}
+		if results[0].Text != snaps[i].text {
+			t.Fatalf("payload %d text = %q, want %q", i, results[0].Text, snaps[i].text)
+		}
+	}
+	w.mu.Lock()
+	entries := append([]string(nil), w.entries...)
+	w.mu.Unlock()
+	if len(entries) != 1 || entries[0] != "alpha\nbeta\ngamma" {
+		t.Fatalf("fallback entries = %#v, want the final snapshot only", entries)
+	}
+
+	if !w.AppendStructured(ProgressCardEntry{
+		Kind:       ProgressEntryToolResult,
+		Tool:       "Read",
+		Text:       "file.go",
+		ToolCallID: "call-other",
+	}, "file.go") {
+		t.Fatal("second id append returned false")
+	}
+	last := p.getPreviewEdits()
+	parsed, ok := ParseProgressCardPayload(last[len(last)-1])
+	if !ok {
+		t.Fatal("payload after second id did not parse")
+	}
+	if len(parsed.Items) != 2 {
+		t.Fatalf("different tool calls = %d items, want 2: %#v", len(parsed.Items), parsed.Items)
+	}
+	if parsed.Items[0].Text != "alpha\nbeta\ngamma" || parsed.Items[1].Text != "file.go" {
+		t.Fatalf("items = %#v", parsed.Items)
+	}
+
+	digestPlatform := &stubCompactProgressPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+		style:              "card",
+		supportPayload:     true,
+	}
+	digest := newCompactProgressWriter(context.Background(), digestPlatform, "ctx", "agent", LangEnglish, nil, 0, "Progress (live card unavailable)")
+	digest.digestMode = true
+	for _, text := range []string{"partial-a", "partial-a-more"} {
+		if !digest.AppendStructured(ProgressCardEntry{
+			Kind:       ProgressEntryToolResult,
+			Tool:       "Bash",
+			Text:       text,
+			ToolCallID: "digest-1",
+			Partial:    true,
+		}, text) {
+			t.Fatalf("digest partial %q returned false", text)
+		}
+	}
+	digest.mu.Lock()
+	if len(digest.items) != 0 {
+		digest.mu.Unlock()
+		t.Fatalf("digest mode stored %d partials", len(digest.items))
+	}
+	digest.mu.Unlock()
+	if !digest.AppendStructured(ProgressCardEntry{
+		Kind:       ProgressEntryToolResult,
+		Tool:       "Bash",
+		Text:       "final-output",
+		ToolCallID: "digest-1",
+	}, "final-output") {
+		t.Fatal("digest final returned false")
+	}
+	if !digest.AppendStructured(ProgressCardEntry{
+		Kind:       ProgressEntryToolResult,
+		Tool:       "Read",
+		Text:       "other-final",
+		ToolCallID: "digest-2",
+	}, "other-final") {
+		t.Fatal("digest second final returned false")
+	}
+	digest.mu.Lock()
+	got := append([]ProgressCardEntry(nil), digest.items...)
+	digest.mu.Unlock()
+	if len(got) != 2 || got[0].Text != "final-output" || got[1].Text != "other-final" {
+		t.Fatalf("digest items = %#v, want two finals", got)
+	}
+	for _, msg := range digestPlatform.getSent() {
+		if strings.Contains(msg, "partial-a") {
+			t.Fatalf("digest sent a partial snapshot: %q", msg)
+		}
+	}
+}
+
 func TestProgressEditIntervalUsesTheLargerGap(t *testing.T) {
 	platform := &stubThrottledProgressPlatform{throttle: 2 * time.Second}
 	if got := progressEditInterval(time.Second, platform); got != 2*time.Second {

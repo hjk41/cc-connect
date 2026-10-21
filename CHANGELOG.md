@@ -29,6 +29,7 @@ Beta since v1.5.0 stable — 16 merged PRs focused on Feishu/Weixin reliability,
 
 ### Fixed
 - **Progress cards**: streamed thinking deltas are coalesced into whole blocks before any card or chat render. Progress edits are throttled (default 1s, `[display] progress_update_interval_ms`, with a trailing update so the latest snapshot is not dropped). A failed card update retries with backoff, rolls over to a new card, or falls back to one digest message — it no longer sends one chat message per event.
+- **Progress cards**: streamed tool-output snapshots replace the progress entry for that tool call instead of appending every longer prefix. Digest mode and non-card paths keep only the final result.
 
 ## Unreleased
 

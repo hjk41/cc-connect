@@ -163,6 +163,31 @@ func TestMapSessionUpdate_toolCallUpdate_inProgress(t *testing.T) {
 	if len(evs) != 1 || evs[0].Type != core.EventToolResult || evs[0].ToolName != "Run" {
 		t.Fatalf("got %+v", evs)
 	}
+	if !evs[0].Partial || evs[0].ToolCallID != "c1" {
+		t.Fatalf("partial snapshot = Partial %v ToolCallID %q, want true / c1", evs[0].Partial, evs[0].ToolCallID)
+	}
+}
+
+func TestMapSessionUpdate_toolCallUpdate_completedIsFinal(t *testing.T) {
+	params := json.RawMessage(`{
+		"sessionId": "s1",
+		"update": {
+			"sessionUpdate": "tool_call_update",
+			"toolCallId": "c1",
+			"title": "Run",
+			"status": "completed",
+			"content": [
+				{"type": "content", "content": {"type": "text", "text": "final output"}}
+			]
+		}
+	}`)
+	evs := mapSessionUpdate("", params)
+	if len(evs) != 1 || evs[0].Type != core.EventToolResult {
+		t.Fatalf("got %+v", evs)
+	}
+	if evs[0].Partial || evs[0].ToolCallID != "c1" || evs[0].Content != "final output" {
+		t.Fatalf("final result = %+v, want Partial false, ToolCallID c1, content final output", evs[0])
+	}
 }
 
 func TestMapSessionUpdate_reasoningChunk(t *testing.T) {
@@ -193,6 +218,9 @@ func TestMapSessionUpdate_toolCall(t *testing.T) {
 	evs := mapSessionUpdate("", params)
 	if len(evs) != 1 || evs[0].Type != core.EventToolUse || evs[0].ToolName != "Read file" {
 		t.Fatalf("got %+v", evs)
+	}
+	if evs[0].ToolCallID != "c1" {
+		t.Fatalf("ToolCallID = %q, want c1", evs[0].ToolCallID)
 	}
 }
 

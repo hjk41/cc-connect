@@ -1919,6 +1919,104 @@ func TestProcessInteractiveEvents_CardProgressUsesStructuredPayloadWhenSupported
 	}
 }
 
+func TestToolResultSnapshots_ReplaceProgressEntry(t *testing.T) {
+	const (
+		id    = "call-1"
+		final = "alpha\nbeta\ngamma"
+	)
+	snapshots := []Event{
+		{Type: EventToolResult, ToolName: "Bash", ToolCallID: id, ToolResult: "alpha", Partial: true},
+		{Type: EventToolResult, ToolName: "Bash", ToolCallID: id, ToolResult: "alpha\nbeta", Partial: true},
+		{Type: EventToolResult, ToolName: "Bash", ToolCallID: id, ToolResult: final},
+		{Type: EventResult, Content: "done", Done: true},
+	}
+
+	t.Run("card", func(t *testing.T) {
+		p := &stubCompactProgressPlatform{
+			stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+			style:              "card",
+			supportPayload:     true,
+		}
+		e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+		e.display.ProgressUpdateInterval = 0
+		sessionKey := "feishu:tool-snapshots"
+		session := e.sessions.GetOrCreateActive(sessionKey)
+		agentSession := newControllableSession("s-tool-snapshots")
+		state := &interactiveState{
+			agentSession: agentSession,
+			platform:     p,
+			replyCtx:     "ctx-tool-snapshots",
+		}
+		e.interactiveStates[sessionKey] = state
+		for _, ev := range snapshots {
+			agentSession.events <- ev
+		}
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-tool-snapshots", time.Now(), nil, nil, state.replyCtx, 0)
+
+		payloads := append(p.getPreviewStarts(), p.getPreviewEdits()...)
+		if len(payloads) == 0 {
+			t.Fatal("progress card was not created")
+		}
+		var lastText string
+		for i, raw := range payloads {
+			parsed, ok := ParseProgressCardPayload(raw)
+			if !ok {
+				t.Fatalf("payload %d did not parse: %s", i, raw)
+			}
+			n := 0
+			for _, item := range parsed.Items {
+				if item.Kind != ProgressEntryToolResult {
+					continue
+				}
+				n++
+				lastText = item.Text
+			}
+			if n != 1 {
+				t.Fatalf("payload %d has %d tool results, want 1", i, n)
+			}
+		}
+		if lastText != final {
+			t.Fatalf("last tool result = %q, want %q", lastText, final)
+		}
+		for _, msg := range p.getSent() {
+			if strings.Contains(msg, "alpha") {
+				t.Fatalf("tool snapshot leaked into chat: %q", msg)
+			}
+		}
+	})
+
+	t.Run("legacy", func(t *testing.T) {
+		p := &stubPlatformEngine{n: "test"}
+		e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+		sessionKey := "test:tool-snapshots-legacy"
+		session := e.sessions.GetOrCreateActive(sessionKey)
+		agentSession := newControllableSession("s-tool-snapshots-legacy")
+		state := &interactiveState{
+			agentSession: agentSession,
+			platform:     p,
+			replyCtx:     "ctx-tool-snapshots-legacy",
+		}
+		e.interactiveStates[sessionKey] = state
+		for _, ev := range snapshots {
+			agentSession.events <- ev
+		}
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-legacy", time.Now(), nil, nil, state.replyCtx, 0)
+
+		toolMsgs := 0
+		for _, msg := range p.getSent() {
+			if strings.Contains(msg, "alpha") && !strings.Contains(msg, "gamma") {
+				t.Fatalf("partial tool snapshot was sent: %q", msg)
+			}
+			if strings.Contains(msg, "gamma") {
+				toolMsgs++
+			}
+		}
+		if toolMsgs != 1 {
+			t.Fatalf("final tool result messages = %d, want 1; sent=%#v", toolMsgs, p.getSent())
+		}
+	})
+}
+
 // TestProcessInteractiveEvents_CardProgressTruncatesToolInputByToolMaxLen verifies
 // that when progress_style=card is used (e.g. Feishu), a long tool input is
 // truncated to display.ToolMaxLen in the structured card payload. The original

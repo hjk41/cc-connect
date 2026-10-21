@@ -56,8 +56,9 @@ type acpSession struct {
 	toolNameByID  map[string]string // toolCallId -> title or kind from tool_call
 	// toolResultByID holds the last tool output emitted per toolCallId so the
 	// same output repeated by later updates (e.g. Devin's terminal preview and
-	// exit update) is not shown twice.
-	toolResultByID map[string]string
+	// exit update) is not shown twice. A repeat is dropped only when the
+	// partial-ness matches, so a final result is kept when it copies the last snapshot.
+	toolResultByID map[string]acpToolResultMark
 
 	// modesMu guards availableModes and currentMode. Both fields are
 	// populated on handshake (session/new or session/load response) and
@@ -1045,10 +1046,18 @@ func commandWithDescription(m map[string]any) (string, bool) {
 	return cmd + "\n# " + desc, true
 }
 
+// acpToolResultMark is the last tool output emitted for one tool call.
+type acpToolResultMark struct {
+	content string
+	partial bool
+}
+
 // refineToolUpdateEvents names tool results from tool_call_update with the
 // title cached from the originating tool_call (updates usually omit it, which
 // made the raw toolCallId show up as the tool name) and drops a result whose
-// output repeats the last one emitted for the same tool call.
+// output repeats the last one emitted for the same tool call with the same
+// partial-ness. A final result that copies the last snapshot is kept so
+// non-card render paths, which ignore partials, still show the output.
 func (s *acpSession) refineToolUpdateEvents(update json.RawMessage, events []core.Event) []core.Event {
 	var u struct {
 		ToolCallID string `json:"toolCallId"`
@@ -1059,7 +1068,7 @@ func (s *acpSession) refineToolUpdateEvents(update json.RawMessage, events []cor
 	s.toolInputMu.Lock()
 	defer s.toolInputMu.Unlock()
 	if s.toolResultByID == nil {
-		s.toolResultByID = make(map[string]string)
+		s.toolResultByID = make(map[string]acpToolResultMark)
 	}
 	name := s.toolNameByID[u.ToolCallID]
 	out := events[:0]
@@ -1068,10 +1077,14 @@ func (s *acpSession) refineToolUpdateEvents(update json.RawMessage, events []cor
 			if name != "" && (ev.ToolName == u.ToolCallID || ev.ToolName == "tool") {
 				ev.ToolName = name
 			}
-			if s.toolResultByID[u.ToolCallID] == ev.Content {
+			if ev.ToolCallID == "" {
+				ev.ToolCallID = u.ToolCallID
+			}
+			prev, seen := s.toolResultByID[u.ToolCallID]
+			if seen && prev.content == ev.Content && prev.partial == ev.Partial {
 				continue
 			}
-			s.toolResultByID[u.ToolCallID] = ev.Content
+			s.toolResultByID[u.ToolCallID] = acpToolResultMark{content: ev.Content, partial: ev.Partial}
 		}
 		out = append(out, ev)
 	}
