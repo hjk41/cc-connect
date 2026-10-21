@@ -338,6 +338,7 @@ const (
 	MsgModelCurrent             MsgKey = "model_current"
 	MsgModelChanged             MsgKey = "model_changed"
 	MsgModelChangeFailed        MsgKey = "model_change_failed"
+	MsgModelUnknown             MsgKey = "model_unknown"
 	MsgModelCardSwitching       MsgKey = "model_card_switching"
 	MsgModelCardSwitched        MsgKey = "model_card_switched"
 	MsgModelCardSwitchFailed    MsgKey = "model_card_switch_failed"
@@ -2300,6 +2301,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 切換模型失敗: %v",
 		LangJapanese:           "❌ モデルの切り替えに失敗しました: %v",
 		LangSpanish:            "❌ Error al cambiar el modelo: %v",
+	},
+	MsgModelUnknown: {
+		LangEnglish:            "Unknown model `%s`. Use `/model` to list available models.",
+		LangChinese:            "未知模型 `%s`。使用 `/model` 查看可用模型。",
+		LangTraditionalChinese: "未知模型 `%s`。使用 `/model` 查看可用模型。",
+		LangJapanese:           "不明なモデル `%s` です。`/model` で利用可能なモデルを確認してください。",
+		LangSpanish:            "Modelo desconocido `%s`. Usa `/model` para ver los modelos disponibles.",
 	},
 	MsgModelCardSwitching: {
 		LangEnglish:            "Switching model to `%s`...",

@@ -225,19 +225,35 @@ func (a *Agent) configuredModels() []core.ModelOption {
 }
 
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
-	if models := readCodexModelCatalog(); len(models) > 0 {
-		return models
+	models, _ := a.availableModels(ctx)
+	return models
+}
+
+// availableModels distinguishes discovered models from built-in suggestions:
+// the latter may lag new or custom model IDs and cannot prove one is invalid.
+func (a *Agent) availableModels(ctx context.Context) ([]core.ModelOption, bool) {
+	a.mu.RLock()
+	codexHome := a.codexHome
+	env := append([]string(nil), a.configEnv...)
+	env = append(env, a.providerEnvLocked()...)
+	env = append(env, a.sessionEnv...)
+	a.mu.RUnlock()
+	if codexHome == "" {
+		codexHome = getenvFromList(env, "CODEX_HOME")
+	}
+	if models := readCodexModelCatalog(codexHome); len(models) > 0 {
+		return models, true
 	}
 	if models := a.configuredModels(); len(models) > 0 {
-		return models
+		return models, true
 	}
 	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {
-		return models
+		return models, true
 	}
-	if models := readCodexCachedModels(); len(models) > 0 {
-		return models
+	if models := readCodexCachedModels(codexHome); len(models) > 0 {
+		return models, true
 	}
-	return defaultCodexModels()
+	return defaultCodexModels(), false
 }
 
 func defaultCodexModels() []core.ModelOption {
@@ -367,8 +383,8 @@ func (a *Agent) fetchModelsFromAPI(ctx context.Context) []core.ModelOption {
 	return models
 }
 
-func readCodexCachedModels() []core.ModelOption {
-	codexHome, _ := resolveCodexHome(nil)
+func readCodexCachedModels(codexHome string) []core.ModelOption {
+	codexHome = resolveCodexHomeDir(codexHome)
 	if codexHome == "" {
 		return nil
 	}
@@ -429,8 +445,8 @@ func parseCodexModelsJSON(data []byte) []core.ModelOption {
 // model_catalog_json setting, then reads and parses that JSON file.
 // This is the authoritative source of model metadata for Codex CLI,
 // maintained by the Codex distribution itself.
-func readCodexModelCatalog() []core.ModelOption {
-	codexHome, _ := resolveCodexHome(nil)
+func readCodexModelCatalog(codexHome string) []core.ModelOption {
+	codexHome = resolveCodexHomeDir(codexHome)
 	if codexHome == "" {
 		return nil
 	}
@@ -697,7 +713,15 @@ func sameCodexPath(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	return filepath.Clean(a) == filepath.Clean(b)
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	left, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	right, err := os.Stat(b)
+	return err == nil && os.SameFile(left, right)
 }
 
 func uniqueCodexSkillDirs(paths []string) []string {

@@ -43,7 +43,11 @@ func TestSkillsMetadataProcess(t *testing.T) {
 		}
 		cwd, _ := os.Getwd()
 		cwds, _ := req.Params["cwds"].([]any)
-		if len(cwds) != 1 || cwds[0] != cwd || req.Params["forceReload"] != true || os.Getenv("CODEX_HOME") != os.Getenv("CC_EXPECT_CODEX_HOME") {
+		var requestedCwd string
+		if len(cwds) == 1 {
+			requestedCwd, _ = cwds[0].(string)
+		}
+		if !sameCodexPath(requestedCwd, cwd) || req.Params["forceReload"] != true || os.Getenv("CODEX_HOME") != os.Getenv("CC_EXPECT_CODEX_HOME") {
 			os.Exit(4)
 		}
 		if os.Getenv("CC_SKILLS_HANG") == "1" {
@@ -54,6 +58,20 @@ func TestSkillsMetadataProcess(t *testing.T) {
 	// Remain alive so the caller must clean up the metadata process.
 	scanner.Scan()
 	os.Exit(0)
+}
+
+func skillsMetadataTestAgent(t *testing.T, workDir, codexHome string, response any) *Agent {
+	t.Helper()
+	data, err := json.Marshal(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Agent{cmd: bin, cliExtraArgs: []string{"-test.run=^TestSkillsMetadataProcess$", "--"}, workDir: workDir, codexHome: codexHome,
+		configEnv: []string{"CC_SKILLS_HELPER=1", "CC_EXPECT_CODEX_HOME=" + codexHome, "CC_SKILLS_RESPONSE=" + string(data)}}
 }
 
 func TestListSkills_ExcludesClaudeDisabledAndCachedSkills(t *testing.T) {
@@ -91,16 +109,7 @@ func TestListSkills_ExcludesClaudeDisabledAndCachedSkills(t *testing.T) {
 			map[string]any{"name": "plugin:disabled", "path": disabled, "enabled": false},
 		},
 	}}}
-	data, err := json.Marshal(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bin, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := &Agent{cmd: bin, cliExtraArgs: []string{"-test.run=^TestSkillsMetadataProcess$", "--"}, workDir: workDir, codexHome: codexHome,
-		configEnv: []string{"CC_SKILLS_HELPER=1", "CC_EXPECT_CODEX_HOME=" + codexHome, "CC_SKILLS_RESPONSE=" + string(data)}}
+	a := skillsMetadataTestAgent(t, workDir, codexHome, response)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	skills, err := a.ListSkills(ctx)
@@ -129,6 +138,72 @@ func TestListSkills_ExcludesClaudeDisabledAndCachedSkills(t *testing.T) {
 	}
 	if time.Since(start) > 3*time.Second {
 		t.Fatal("metadata process did not respect cancellation")
+	}
+}
+
+func TestListSkills_AcceptsSymlinkedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real-workspace")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "workspace-alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	skill := filepath.Join(realDir, "SKILL.md")
+	if err := os.WriteFile(skill, []byte("---\nname: linked\ndescription: Fixture\n---\nLinked workspace instructions"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	response := map[string]any{"data": []any{map[string]any{
+		"cwd": realDir, "skills": []any{map[string]any{"name": "linked", "path": skill, "enabled": true}},
+	}}}
+	a := skillsMetadataTestAgent(t, alias, filepath.Join(root, "codex"), response)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	skills, err := a.ListSkills(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "linked" || skills[0].Prompt != "Linked workspace instructions" {
+		t.Fatalf("skills = %#v, want linked workspace skill", skills)
+	}
+}
+
+func TestSameCodexPath_RecognizesDirectoryAliases(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	otherDir := filepath.Join(root, "other")
+	for _, dir := range []string{realDir, otherDir} {
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	for _, tc := range []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"alias to real", alias, realDir, true},
+		{"real to alias", realDir, alias, true},
+		{"different directories", alias, otherDir, false},
+		{"empty path", "", realDir, false},
+		{"identical missing path", filepath.Join(root, "missing"), filepath.Join(root, "missing"), true},
+		{"different missing paths", filepath.Join(root, "missing"), filepath.Join(root, "absent"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sameCodexPath(tc.a, tc.b); got != tc.want {
+				t.Fatalf("sameCodexPath(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
 	}
 }
 

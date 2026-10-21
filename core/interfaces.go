@@ -462,6 +462,10 @@ type ModelValidator interface {
 	ValidateModel(ctx context.Context, model string) (string, error)
 }
 
+// ErrUnknownModel lets model validators request a localized rejection before
+// the engine changes or saves the selected model.
+var ErrUnknownModel = errors.New("unknown model")
+
 // ReasoningEffortSwitcher is an optional interface for agents that support
 // runtime switching of reasoning effort.
 type ReasoningEffortSwitcher interface {

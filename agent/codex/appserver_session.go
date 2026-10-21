@@ -178,10 +178,11 @@ type appServerSession struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	stateMu      sync.Mutex
-	pendingMsgs  []string
-	currentTurn  string
-	preambleSent bool
+	stateMu       sync.Mutex
+	pendingMsgs   []string
+	currentTurn   string
+	completedTurn string
+	preambleSent  bool
 
 	runtimeMu sync.RWMutex
 	usage     *core.UsageReport
@@ -533,10 +534,9 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 		return fmt.Errorf("codex app-server turn/start returned empty turn id")
 	}
 
-	s.stateMu.Lock()
-	s.currentTurn = resp.Turn.ID
-	s.pendingMsgs = s.pendingMsgs[:0]
-	s.stateMu.Unlock()
+	// Notifications can arrive before the turn/start response. Do not erase
+	// their text or reactivate a turn that has already completed.
+	s.beginTurn(resp.Turn.ID)
 
 	return nil
 }
@@ -1130,26 +1130,35 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	var scope struct {
+		ThreadID string `json:"threadId"`
+	}
+	if err := json.Unmarshal(paramsRaw, &scope); err != nil {
+		return
+	}
+	if threadID := s.CurrentSessionID(); threadID != "" && scope.ThreadID != "" && scope.ThreadID != threadID {
+		// The app-server also streams descendant agent notifications. Their
+		// output and completion belong to that agent, not this conversation.
+		slog.Debug("codex app-server: ignoring notification for another thread", "method", method, "thread_id", scope.ThreadID)
+		return
+	}
+
 	switch method {
 	case "turn/started":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
-			s.stateMu.Lock()
-			s.currentTurn = notif.Turn.ID
-			s.pendingMsgs = s.pendingMsgs[:0]
-			s.stateMu.Unlock()
-			s.storeContextUsage(nil)
+			s.beginTurn(notif.Turn.ID)
 		}
 
 	case "item/started":
 		var notif itemNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.matchesCurrentTurn(notif.TurnID) {
 			s.handleItemStarted(notif.Item)
 		}
 
 	case "item/completed":
 		var notif itemNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.matchesCurrentTurn(notif.TurnID) {
 			s.handleItemCompleted(notif.Item)
 		}
 
@@ -1164,22 +1173,10 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 				if errMsg == "" {
 					errMsg = "turn failed (no details)"
 				}
-				s.failTurn(fmt.Errorf("%s", errMsg))
+				s.failTurn(notif.Turn.ID, fmt.Errorf("%s", errMsg))
 			} else {
-				s.completeTurn()
+				s.completeTurn(notif.Turn.ID)
 			}
-		}
-
-	case "thread/status/changed":
-		var notif struct {
-			ThreadID string `json:"threadId"`
-			Status   struct {
-				Type string `json:"type"`
-			} `json:"status"`
-		}
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil && notif.Status.Type == "idle" {
-			// In codex 0.125+, thread going idle signals turn completion.
-			s.completeTurn()
 		}
 
 	case "account/rateLimits/updated":
@@ -1549,24 +1546,44 @@ func rpcIDToInt64(v any) (int64, bool) {
 	return 0, false
 }
 
-func (s *appServerSession) completeTurn() {
+func (s *appServerSession) beginTurn(turnID string) {
 	s.stateMu.Lock()
-	if s.currentTurn == "" {
+	if turnID == "" || turnID == s.currentTurn || turnID == s.completedTurn {
 		s.stateMu.Unlock()
 		return
 	}
+	s.currentTurn = turnID
+	s.pendingMsgs = s.pendingMsgs[:0]
+	s.stateMu.Unlock()
+	s.storeContextUsage(nil)
+}
+
+func (s *appServerSession) matchesCurrentTurn(turnID string) bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return turnID == "" || turnID == s.currentTurn
+}
+
+func (s *appServerSession) completeTurn(turnID string) {
+	s.stateMu.Lock()
+	if s.currentTurn == "" || s.currentTurn != turnID {
+		s.stateMu.Unlock()
+		return
+	}
+	s.completedTurn = turnID
 	s.currentTurn = ""
 	s.stateMu.Unlock()
 	s.flushPendingAsText()
 	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
 }
 
-func (s *appServerSession) failTurn(err error) {
+func (s *appServerSession) failTurn(turnID string, err error) {
 	s.stateMu.Lock()
-	if s.currentTurn == "" {
+	if s.currentTurn == "" || s.currentTurn != turnID {
 		s.stateMu.Unlock()
 		return
 	}
+	s.completedTurn = turnID
 	s.currentTurn = ""
 	s.pendingMsgs = s.pendingMsgs[:0]
 	s.stateMu.Unlock()

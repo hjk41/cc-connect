@@ -10482,6 +10482,9 @@ func (e *Engine) canonicalizeModel(agent Agent, target string) (string, error) {
 	defer cancel()
 	canonical, err := validator.ValidateModel(ctx, target)
 	if err != nil {
+		if errors.Is(err, ErrUnknownModel) {
+			return "", errors.New(e.i18n.Tf(MsgModelUnknown, target))
+		}
 		return "", err
 	}
 	if strings.TrimSpace(canonical) == "" {

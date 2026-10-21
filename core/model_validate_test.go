@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -89,5 +90,23 @@ func TestCmdModel_ValidatorCanonicalizes(t *testing.T) {
 	e.cmdModel(p, &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}, []string{"custom"})
 	if agent.model != "gpt-4.1" || saved != "gpt-4.1" {
 		t.Fatalf("model=%q saved=%q", agent.model, saved)
+	}
+}
+
+func TestCmdModel_UnknownModelRejectionLocalized(t *testing.T) {
+	for _, lang := range []Language{LangEnglish, LangChinese, LangTraditionalChinese, LangJapanese, LangSpanish} {
+		t.Run(string(lang), func(t *testing.T) {
+			p := &stubPlatformEngine{n: "plain"}
+			a := &validatingModelAgent{}
+			a.validate = func(context.Context, string) (string, error) {
+				return "", fmt.Errorf("agent: %w", ErrUnknownModel)
+			}
+			e := NewEngine("test", a, []Platform{p}, "", lang)
+			e.cmdModel(p, &Message{SessionKey: "test:user", ReplyCtx: "ctx"}, []string{"yolo"})
+			want := e.i18n.Tf(MsgModelChangeFailed, e.i18n.Tf(MsgModelUnknown, "yolo"))
+			if sent := p.getSent(); len(sent) != 1 || sent[0] != want {
+				t.Fatalf("rejection = %q, want %q", sent, want)
+			}
+		})
 	}
 }

@@ -1828,9 +1828,91 @@ func TestCUJ_F1_ProviderSwitchLinkedToAgent(t *testing.T) {
 	t.Log("CUJ-F1: provider switching is per-agent; covered by agent/*_test.go provider tests")
 }
 
-// CUJ-F2 · /model switches model — same pattern as F1, agent-managed.
+type cujModelAgent struct {
+	cujAgent
+	model string
+}
+
+func (a *cujModelAgent) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
+func (a *cujModelAgent) GetModel() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.model
+}
+
+func (a *cujModelAgent) AvailableModels(context.Context) []ModelOption {
+	return []ModelOption{{Name: "model-one"}, {Name: "model-two"}}
+}
+
+func (a *cujModelAgent) ValidateModel(ctx context.Context, model string) (string, error) {
+	for _, m := range a.AvailableModels(ctx) {
+		if m.Name == model {
+			return model, nil
+		}
+	}
+	return "", ErrUnknownModel
+}
+
+func (a *cujModelAgent) StartSession(ctx context.Context, id string) (AgentSession, error) {
+	s, err := a.cujAgent.StartSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	cs := s.(*cujAgentSession)
+	cs.reply = "reply from " + a.GetModel()
+	return cs, nil
+}
+
+// CUJ-F2 · A rejected /model command preserves the working conversation.
 func TestCUJ_F2_ModelSwitchLinkedToAgent(t *testing.T) {
-	t.Log("CUJ-F2: model switching is per-agent; covered by agent/*_test.go model tests")
+	t.Run("UnknownModelPreservesConversation", func(t *testing.T) {
+		env := newCUJEnv(t)
+		agent := &cujModelAgent{}
+		env.engine.agent = agent
+		t.Cleanup(func() { _ = env.engine.Stop() })
+
+		env.userSends("f2", "/model model-one")
+		if !env.sentContains("Model switched to `model-one`") {
+			t.Fatalf("missing successful switch: %v", env.plat.getSent())
+		}
+
+		env.plat.clearSent()
+		env.userSends("f2", "hello")
+		env.waitFor("initial reply", 2*time.Second, func() bool {
+			return env.sentContains("reply from model-one")
+		})
+		// Only the existing mock agent process has this retained context.
+		// Replacing it after the invalid command would lose the response.
+		agent.mu.Lock()
+		live := agent.sessions[len(agent.sessions)-1]
+		agent.mu.Unlock()
+		live.mu.Lock()
+		live.reply = "remembered hello from model-one"
+		live.mu.Unlock()
+
+		env.plat.clearSent()
+		env.userSends("f2", "/model yolo")
+		if !env.sentContains("Unknown model `yolo`") {
+			t.Fatalf("missing immediate rejection: %v", env.plat.getSent())
+		}
+
+		env.plat.clearSent()
+		env.userSends("f2", "/model")
+		if !env.sentContains("Current model: model-one") {
+			t.Fatalf("working model was lost: %v", env.plat.getSent())
+		}
+
+		env.plat.clearSent()
+		env.userSends("f2", "continue")
+		env.waitFor("continued reply using original model", 2*time.Second, func() bool {
+			return env.sentContains("remembered hello from model-one")
+		})
+	})
 }
 
 // CUJ-F3 · /lang switches i18n locale; next reply uses new language.
