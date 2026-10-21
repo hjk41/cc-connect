@@ -253,3 +253,113 @@ func TestCursorUsageDBPathWindowsFallback(t *testing.T) {
 		t.Fatalf("path = %q, want %q", got, want)
 	}
 }
+
+func TestCursorUsageAuthPath(t *testing.T) {
+	t.Setenv("APPDATA", "/roaming")
+	t.Setenv("XDG_CONFIG_HOME", "/xdg")
+	for _, tc := range []struct{ os, want string }{
+		{"darwin", "/home/test/.cursor/auth.json"},
+		{"windows", "/roaming/Cursor/auth.json"},
+		{"linux", "/xdg/cursor/auth.json"},
+	} {
+		if got := cursorUsageAuthPath(tc.os, "/home/test"); got != tc.want {
+			t.Errorf("%s: %s", tc.os, got)
+		}
+	}
+}
+
+func TestReadCursorCLIAuthToken(t *testing.T) {
+	dir := t.TempDir()
+	for _, tc := range []struct{ raw, want string }{
+		{`{"accessToken":"token-1"}`, "token-1"},
+		{`{"access_token":"token-2"}`, "token-2"},
+		{`{"accessToken":" token-3 "}`, "token-3"},
+	} {
+		path := filepath.Join(dir, "auth.json")
+		if err := os.WriteFile(path, []byte(tc.raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := readCursorCLIAuthToken(path)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s: %q %v", tc.raw, got, err)
+		}
+	}
+	for _, raw := range []string{`{}`, `{"accessToken":""}`, `not json`} {
+		path := filepath.Join(dir, "auth.json")
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readCursorCLIAuthToken(path); err == nil {
+			t.Fatalf("accepted %s", raw)
+		}
+	}
+}
+
+func TestCursorUsagePrefersCLITokenThenDesktop(t *testing.T) {
+	home := t.TempDir()
+	oldHome, oldURL, oldClient := cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient
+	t.Cleanup(func() { cursorUserHomeDir, cursorUsageBaseURL, cursorUsageClient = oldHome, oldURL, oldClient })
+	cursorUserHomeDir = func() (string, error) { return home, nil }
+	t.Setenv("CURSOR_AUTH_TOKEN", "")
+	t.Setenv("CURSOR_API_ENDPOINT", "")
+	t.Setenv("APPDATA", home)
+	t.Setenv("XDG_CONFIG_HOME", home)
+	authPath := cursorUsageAuthPath(runtime.GOOS, home)
+	if err := os.MkdirAll(filepath.Dir(authPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authPath, []byte(`{"accessToken":"cli-token"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	makeUsageDB(t, cursorUsageDBPath(runtime.GOOS, home), "desktop-token")
+
+	// CLI token succeeds: no need to touch the desktop DB.
+	var auths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"planUsage":{"autoPercentUsed":10}}`)
+	}))
+	defer server.Close()
+	cursorUsageBaseURL, cursorUsageClient = server.URL, server.Client()
+	if _, err := (&Agent{}).GetUsage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(auths, []string{"Bearer cli-token"}) {
+		t.Fatalf("auth order = %v", auths)
+	}
+
+	// Expired CLI token falls back to the desktop login.
+	auths = nil
+	server2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") == "Bearer cli-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"planUsage":{"autoPercentUsed":10}}`)
+	}))
+	defer server2.Close()
+	cursorUsageBaseURL, cursorUsageClient = server2.URL, server2.Client()
+	if _, err := (&Agent{}).GetUsage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(auths, []string{"Bearer cli-token", "Bearer desktop-token"}) {
+		t.Fatalf("fallback order = %v", auths)
+	}
+
+	// Explicit env token wins over both.
+	t.Setenv("CURSOR_AUTH_TOKEN", "env-token")
+	auths = nil
+	server3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auths = append(auths, r.Header.Get("Authorization"))
+		fmt.Fprint(w, `{"planUsage":{"autoPercentUsed":10}}`)
+	}))
+	defer server3.Close()
+	cursorUsageBaseURL, cursorUsageClient = server3.URL, server3.Client()
+	if _, err := (&Agent{}).GetUsage(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(auths, []string{"Bearer env-token"}) {
+		t.Fatalf("env order = %v", auths)
+	}
+}

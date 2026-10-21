@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -21,6 +22,8 @@ import (
 )
 
 var _ core.UsageReporter = (*Agent)(nil)
+
+var errCursorUsageAuth = errors.New("cursor login expired")
 
 var cursorUsageBaseURL = "https://api2.cursor.sh"
 var cursorUsageClient = &http.Client{
@@ -77,6 +80,79 @@ func readCursorUsageToken(ctx context.Context, path string) (string, error) {
 	return raw, nil
 }
 
+// cursorUsageAuthPath mirrors the Cursor Agent CLI's own auth file location.
+func cursorUsageAuthPath(goos, home string) string {
+	switch goos {
+	case "darwin":
+		return filepath.Join(home, ".cursor", "auth.json")
+	case "windows":
+		root := os.Getenv("APPDATA")
+		if root == "" {
+			root = filepath.Join(home, "AppData", "Roaming")
+		}
+		return filepath.Join(root, "Cursor", "auth.json")
+	default:
+		root := os.Getenv("XDG_CONFIG_HOME")
+		if root == "" {
+			root = filepath.Join(home, ".config")
+		}
+		return filepath.Join(root, "cursor", "auth.json")
+	}
+}
+
+func readCursorCLIAuthToken(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var auth struct {
+		AccessToken      string `json:"accessToken"`
+		AccessTokenSnake string `json:"access_token"`
+	}
+	if err := json.Unmarshal(raw, &auth); err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(auth.AccessToken)
+	if token == "" {
+		token = strings.TrimSpace(auth.AccessTokenSnake)
+	}
+	if token == "" {
+		return "", fmt.Errorf("cursor: auth.json has no accessToken")
+	}
+	return token, nil
+}
+
+// cursorUsageTokens builds token candidates in priority order: an explicit
+// CURSOR_AUTH_TOKEN, then the Cursor Agent CLI login, then the desktop login
+// for users who never ran `agent login`.
+func cursorUsageTokens(ctx context.Context, goos, home string) []string {
+	var tokens []string
+	seen := make(map[string]bool)
+	add := func(token string) {
+		token = strings.TrimSpace(token)
+		if token == "" || seen[token] {
+			return
+		}
+		seen[token] = true
+		tokens = append(tokens, token)
+	}
+	add(os.Getenv("CURSOR_AUTH_TOKEN"))
+	if token, err := readCursorCLIAuthToken(cursorUsageAuthPath(goos, home)); err == nil {
+		add(token)
+	}
+	if token, err := readCursorUsageToken(ctx, cursorUsageDBPath(goos, home)); err == nil {
+		add(token)
+	}
+	return tokens
+}
+
+func cursorUsageEndpoint() string {
+	if endpoint := strings.TrimSpace(os.Getenv("CURSOR_API_ENDPOINT")); endpoint != "" {
+		return endpoint
+	}
+	return cursorUsageBaseURL
+}
+
 // GetUsage reads the desktop login and queries subscription quota without starting a session.
 func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if ctx == nil {
@@ -86,30 +162,44 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	defer cancel()
 	home, err := cursorUserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("cursor: cannot locate login; open Cursor and sign in")
+		return nil, fmt.Errorf("cursor: cannot locate login; run agent login or sign in to Cursor")
 	}
-	token, err := readCursorUsageToken(ctx, cursorUsageDBPath(runtime.GOOS, home))
-	if err != nil {
-		return nil, err
+	tokens := cursorUsageTokens(ctx, runtime.GOOS, home)
+	if len(tokens) == 0 {
+		return nil, fmt.Errorf("cursor: no saved login; run agent login or sign in to Cursor")
 	}
-	for _, method := range []string{"GetCurrentPeriodUsage", "GetUsageLimitStatusAndActiveGrants"} {
-		body, err := fetchCursorUsage(ctx, token, method)
-		if err != nil {
-			return nil, err
+	endpoint := cursorUsageEndpoint()
+	var lastErr error
+	validToken := false
+	for _, token := range tokens {
+		for _, method := range []string{"GetCurrentPeriodUsage", "GetUsageLimitStatusAndActiveGrants"} {
+			body, err := fetchCursorUsage(ctx, endpoint, token, method)
+			if err != nil {
+				lastErr = err
+				if errors.Is(err, errCursorUsageAuth) {
+					break
+				}
+				return nil, err
+			}
+			validToken = true
+			windows, err := parseCursorQuotaWindows(body, time.Now().Unix())
+			if err != nil {
+				lastErr = err
+				return nil, err
+			}
+			if len(windows) > 0 {
+				return &core.UsageReport{Provider: "cursor", Buckets: []core.UsageBucket{{Name: "Cursor", Windows: windows}}}, nil
+			}
 		}
-		windows, err := parseCursorQuotaWindows(body, time.Now().Unix())
-		if err != nil {
-			return nil, err
-		}
-		if len(windows) > 0 {
-			return &core.UsageReport{Provider: "cursor", Buckets: []core.UsageBucket{{Name: "Cursor", Windows: windows}}}, nil
-		}
+	}
+	if !validToken && lastErr != nil {
+		return nil, lastErr
 	}
 	return nil, fmt.Errorf("cursor: account returned no subscription quota windows")
 }
 
-func fetchCursorUsage(ctx context.Context, token, method string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(cursorUsageBaseURL, "/")+"/aiserver.v1.DashboardService/"+method, strings.NewReader("{}"))
+func fetchCursorUsage(ctx context.Context, endpoint, token, method string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(endpoint, "/")+"/aiserver.v1.DashboardService/"+method, strings.NewReader("{}"))
 	if err != nil {
 		return nil, fmt.Errorf("cursor: cannot create usage request")
 	}
@@ -125,7 +215,7 @@ func fetchCursorUsage(ctx context.Context, token, method string) ([]byte, error)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return nil, fmt.Errorf("cursor: login expired; sign in to Cursor again")
+		return nil, fmt.Errorf("%w; run agent login or sign in to Cursor again", errCursorUsageAuth)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("cursor: usage request failed (HTTP %d)", resp.StatusCode)
