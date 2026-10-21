@@ -718,8 +718,15 @@ func TestWriteTempAppendPromptFile_ReadableByOtherUser(t *testing.T) {
 	// truly 0o000 file. We still assert it to make the regression
 	// observable on systems where the test runs as a non-root user
 	// (CI matrix, dev laptops).
-	if _, err := os.OpenFile(path, os.O_RDONLY, 0); err != nil {
+	f, err := os.OpenFile(path, os.O_RDONLY, 0)
+	if err != nil {
 		t.Fatalf("open O_RDONLY as a non-owner: %v — file is unreadable even for an unprivileged reader", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close prompt reader: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove prompt after reader closes: %v", err)
 	}
 }
 
