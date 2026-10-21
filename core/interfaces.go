@@ -509,6 +509,7 @@ type UsageBucket struct {
 // UsageWindow describes a single quota window.
 type UsageWindow struct {
 	Name              string
+	Label             string // Optional provider label; empty uses the localized duration.
 	UsedPercent       int
 	WindowSeconds     int
 	ResetAfterSeconds int

@@ -9262,7 +9262,7 @@ func (e *Engine) cmdUsage(p Platform, msg *Message) {
 		return
 	}
 
-	fetchCtx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	fetchCtx, cancel := context.WithTimeout(e.ctx, 75*time.Second)
 	defer cancel()
 
 	report, err := reporter.GetUsage(fetchCtx)
@@ -9409,7 +9409,11 @@ func formatUsageBlock(lang Language, window *UsageWindow) string {
 		remaining = 0
 	}
 	var sb strings.Builder
-	sb.WriteString(usageWindowLabel(lang, window.WindowSeconds))
+	label := window.Label
+	if label == "" {
+		label = usageWindowLabel(lang, window.WindowSeconds)
+	}
+	sb.WriteString(label)
 	sb.WriteString("\n")
 	sb.WriteString(usageRemainingLabel(lang))
 	sb.WriteString(usageColon(lang))
