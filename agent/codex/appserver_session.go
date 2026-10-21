@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -141,6 +142,7 @@ type appServerRequestUserInputAnswer struct {
 }
 
 type appServerSession struct {
+	allowedTools   []string
 	cliBin         string
 	cliExtraArgs   []string
 	url            string
@@ -197,9 +199,14 @@ const (
 	appServerUsageRefreshTimeout = 1500 * time.Millisecond
 )
 
-func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []string, url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string, extraEnv []string, codexHome string, systemPrompt string, appendPrompt string) (*appServerSession, error) {
+func newAppServerSession(
+	ctx context.Context, cliBin string, cliExtraArgs []string,
+	url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string,
+	extraEnv []string, codexHome, systemPrompt, appendPrompt string, allowedTools []string,
+) (*appServerSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
+		allowedTools:     append([]string(nil), allowedTools...),
 		cliBin:           cliBin,
 		cliExtraArgs:     append([]string(nil), cliExtraArgs...),
 		url:              url,
@@ -652,6 +659,17 @@ func (s *appServerSession) handleApprovalRequest(rawID json.RawMessage, method s
 		}
 	}
 
+	knownApproval := method == "item/commandExecution/requestApproval" || method == "item/fileChange/requestApproval"
+	if knownApproval && toolallowlist.Allows(s.allowedTools, toolName) {
+		if err := s.writeJSON(map[string]any{
+			"jsonrpc": "2.0", "id": rawID,
+			"result": map[string]any{"decision": "accept"},
+		}); err != nil {
+			slog.Warn("codex app-server: auto-approve tool", "tool", toolName, "error", err)
+		}
+		return
+	}
+
 	ch := make(chan core.PermissionResult, 1)
 	s.approvalsMu.Lock()
 	s.pendingApprovals[requestID] = ch
@@ -696,6 +714,20 @@ func (s *appServerSession) handlePermissionsApproval(rawID json.RawMessage, para
 	requestID := string(rawID)
 	var params map[string]any
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
+		return
+	}
+
+	if toolallowlist.Allows(s.allowedTools, "Permissions") {
+		perms := params["permissions"]
+		if perms == nil {
+			perms = map[string]any{}
+		}
+		if err := s.writeJSON(map[string]any{
+			"jsonrpc": "2.0", "id": rawID,
+			"result": map[string]any{"permissions": perms, "scope": "turn"},
+		}); err != nil {
+			slog.Warn("codex app-server: auto-approve permissions", "error", err)
+		}
 		return
 	}
 

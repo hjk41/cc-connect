@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -31,6 +32,7 @@ func init() {
 //   - "plan":     --mode plan (read-only analysis)
 //   - "ask":      --mode ask (Q&A style, read-only)
 type Agent struct {
+	allowedTools    []string
 	workDir         string
 	model           string
 	modelPinned     bool // SetModel overrides the active provider default
@@ -62,6 +64,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
+		allowedTools:    toolallowlist.Parse(opts["allowed_tools"]),
 		workDir:         workDir,
 		model:           model,
 		reasoningEffort: normalizeCursorEffort(effort),
@@ -137,6 +140,7 @@ func (a *Agent) SetSessionEnv(env []string) {
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.RLock()
+	allowedTools := append([]string(nil), a.allowedTools...)
 	mode := a.mode
 	cmd := a.cmd
 	extraArgs := append([]string{}, a.cliExtraArgs...)
@@ -146,7 +150,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
 
-	return newCursorSession(ctx, cmd, extraArgs, workDir, a.launchModel(ctx), mode, sessionID, extraEnv)
+	return newCursorSession(ctx, cmd, extraArgs, workDir, a.launchModel(ctx), mode, sessionID, extraEnv, allowedTools)
 }
 
 var _ core.ResumeReasoningApplier = (*Agent)(nil)
@@ -171,6 +175,23 @@ func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
 }
 
 func (a *Agent) Stop() error { return nil }
+
+// ── CommandProvider implementation ────────────────────────────
+
+var _ core.CommandProvider = (*Agent)(nil)
+
+func (a *Agent) CommandDirs() []string {
+	workDir := a.GetWorkDir()
+	absDir, err := filepath.Abs(workDir)
+	if err != nil {
+		absDir = workDir
+	}
+	dirs := []string{filepath.Join(absDir, ".cursor", "commands")}
+	if home, err := os.UserHomeDir(); err == nil {
+		dirs = append(dirs, filepath.Join(home, ".cursor", "commands"))
+	}
+	return dirs
+}
 
 // ── SkillProvider implementation ──────────────────────────────
 
@@ -576,5 +597,23 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 		}
 		opts["env"] = env
 	}
+	opts["allowed_tools"] = append([]string(nil), a.allowedTools...)
 	return opts
 }
+
+// AddAllowedTools updates the allowlist for sessions started after this call.
+func (a *Agent) AddAllowedTools(tools ...string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.allowedTools = toolallowlist.Add(a.allowedTools, tools...)
+	return nil
+}
+
+// GetAllowedTools returns a copy of the configured allowlist.
+func (a *Agent) GetAllowedTools() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.allowedTools...)
+}
+
+var _ core.ToolAuthorizer = (*Agent)(nil)

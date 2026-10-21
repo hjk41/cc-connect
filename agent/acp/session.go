@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -23,12 +24,13 @@ import (
 const toolInputCacheMaxEntries = 1000
 
 type acpSession struct {
-	workDir string
-	events  chan core.Event
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	alive   atomic.Bool
+	allowedTools []string
+	workDir      string
+	events       chan core.Event
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	alive        atomic.Bool
 
 	// replaying is true while session/load is in flight. The agent replays the
 	// whole history as session/update notifications before answering; those
@@ -50,6 +52,10 @@ type acpSession struct {
 
 	permMu   sync.Mutex
 	permByID map[string]permState
+	askMu    sync.Mutex
+	askByID  map[string]cursorAskQuestionState
+	planMu   sync.Mutex
+	planByID map[string]json.RawMessage
 
 	toolInputMu   sync.Mutex
 	toolInputByID map[string]string // toolCallId -> summarized tool input
@@ -132,6 +138,7 @@ type permState struct {
 // adding optional knobs (initialMode, callbacks) and would otherwise
 // break every call site each time.
 type acpSessionConfig struct {
+	allowedTools           []string
 	command                string
 	args                   []string
 	extraEnv               []string
@@ -155,11 +162,14 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &acpSession{
+		allowedTools:           append([]string(nil), cfg.allowedTools...),
 		workDir:                absWorkDir,
 		events:                 make(chan core.Event, 128),
 		ctx:                    sessionCtx,
 		cancel:                 cancel,
 		permByID:               make(map[string]permState),
+		askByID:                make(map[string]cursorAskQuestionState),
+		planByID:               make(map[string]json.RawMessage),
 		toolInputByID:          make(map[string]string),
 		toolNameByID:           make(map[string]string),
 		acpSessID:              cfg.resumeSessionID,
@@ -669,8 +679,12 @@ func (s *acpSession) onServerRequest(method string, id json.RawMessage, params j
 	switch method {
 	case "session/request_permission":
 		s.handlePermissionRequest(id, params)
-	case "cursor/ask_question", "cursor/create_plan", "cursor/update_todos", "cursor/task", "cursor/generate_image":
-		// Cursor CLI extensions — acknowledge so tool flows do not block; IM UX is limited for these.
+	case "cursor/ask_question":
+		s.handleCursorAskQuestion(id, params)
+	case "cursor/create_plan":
+		s.handleCursorCreatePlan(id, params)
+	case "cursor/update_todos", "cursor/task", "cursor/generate_image":
+		// Non-blocking Cursor extensions need no IM interaction.
 		slog.Debug("acp: cursor extension request (no-op ack)", "method", method)
 		_ = s.tr.respondSuccess(id, map[string]any{})
 	default:
@@ -721,6 +735,13 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 		defer s.wg.Done()
 		s.waitForPermissionCache(p.ToolCall.ToolCallID, p.ToolCall.Title, p.ToolCall.Kind, metaCmd)
 		toolName, toolInput := s.permissionDisplay(p.ToolCall.ToolCallID, p.ToolCall.Title, p.ToolCall.Kind, p.ToolCall.RawInput, metaCmd)
+		if toolallowlist.Allows(s.allowedTools, toolName) {
+			if err := s.RespondPermission(reqKey, core.PermissionResult{Behavior: "allow"}); err != nil {
+				slog.Warn("acp: auto-approve tool", "request_id", reqKey, "tool", toolName, "error", err)
+			}
+			return
+		}
+
 		slog.Info("acp: permission request", "request_id", reqKey, "tool", toolName, "input", toolInput)
 		s.emit(core.Event{
 			Type:         core.EventPermissionRequest,
@@ -903,6 +924,37 @@ func (s *acpSession) appendImageRefs(prompt string, images []core.ImageAttachmen
 func (s *acpSession) RespondPermission(requestID string, result core.PermissionResult) error {
 	if !s.alive.Load() {
 		return fmt.Errorf("acp: session closed")
+	}
+
+	s.askMu.Lock()
+	ask, isAsk := s.askByID[requestID]
+	if isAsk {
+		delete(s.askByID, requestID)
+	}
+	s.askMu.Unlock()
+	if isAsk {
+		outcome := cursorAskQuestionOutcome{Outcome: "skipped"}
+		if !strings.EqualFold(result.Behavior, "allow") {
+			outcome.Reason = "user declined"
+		} else if answers := mapCursorAnswers(ask.Questions, result.UpdatedInput); len(answers) > 0 {
+			outcome.Outcome = "answered"
+			outcome.Answers = answers
+		}
+		return s.tr.respondSuccess(ask.RPCID, cursorAskQuestionResponse{Outcome: outcome})
+	}
+
+	s.planMu.Lock()
+	planID, isPlan := s.planByID[requestID]
+	if isPlan {
+		delete(s.planByID, requestID)
+	}
+	s.planMu.Unlock()
+	if isPlan {
+		outcome := "rejected"
+		if strings.EqualFold(result.Behavior, "allow") {
+			outcome = "accepted"
+		}
+		return s.tr.respondSuccess(planID, cursorCreatePlanResponse{Outcome: cursorCreatePlanOutcome{Outcome: outcome}})
 	}
 
 	s.permMu.Lock()

@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,6 +80,87 @@ func TestCommandRegistry_AgentDirResolve(t *testing.T) {
 	}
 	if cmd.Prompt != "Deploy to production" {
 		t.Errorf("Prompt = %q", cmd.Prompt)
+	}
+}
+
+func TestCommandRegistry_AgentFileFrontmatterAndDollarArguments(t *testing.T) {
+	tests := []struct {
+		name, raw, prompt, description, expanded string
+	}{
+		{
+			name: "frontmatter and templates",
+			raw: "---\ndescription: 'Review changes'\nargument-hint: files\n---\n" +
+				"Review $ARGUMENTS; first $1; ninth $9; literal $$; escaped $$1 $$ARGUMENTS; native {{2}} {{3:default}}",
+			prompt:      "Review {{args}}; first {{1}}; ninth {{9}}; literal $; escaped $1 $ARGUMENTS; native {{2}} {{3:default}}",
+			description: "Review changes",
+			expanded:    "Review alpha beta; first alpha; ninth ; literal $; escaped $1 $ARGUMENTS; native beta default",
+		},
+		{
+			name:        "multi-digit amounts and non-arguments",
+			raw:         "Keep $10 $100 $1000 $0.50 $USD $HOME $ and {{1}}",
+			prompt:      "Keep $10 $100 $1000 $0.50 $USD $HOME $ and {{1}}",
+			description: "Keep $10 $100 $1000 $0.50 $USD $HOME $ and {{1}}",
+			expanded:    "Keep $10 $100 $1000 $0.50 $USD $HOME $ and alpha",
+		},
+		{
+			name:        "all positional arguments",
+			raw:         "$1 $2 $3 $4 $5 $6 $7 $8 $9",
+			prompt:      "{{1}} {{2}} {{3}} {{4}} {{5}} {{6}} {{7}} {{8}} {{9}}",
+			description: "$1 $2 $3 $4 $5 $6 $7 $8 $9",
+			expanded:    "alpha beta       ",
+		},
+		{
+			name:        "fallback description",
+			raw:         "---\nname: review\n---\nFirst body line\nNext line {{1}}",
+			prompt:      "First body line\nNext line {{1}}",
+			description: "First body line",
+			expanded:    "First body line\nNext line alpha",
+		},
+		{
+			name:        "unicode fallback truncation",
+			raw:         strings.Repeat("界", 65),
+			prompt:      strings.Repeat("界", 65),
+			description: strings.Repeat("界", 60) + "...",
+			expanded:    strings.Repeat("界", 65) + "\n\nalpha beta",
+		},
+		{
+			name:        "folded frontmatter and CRLF",
+			raw:         "---\r\ndescription: >-\r\n  Review the\r\n  changes\r\n---\r\nCheck {{1}}",
+			prompt:      "Check {{1}}",
+			description: "Review the changes",
+			expanded:    "Check alpha",
+		},
+		{
+			name:        "native defaults are preserved",
+			raw:         "Keep {{3:$1}} and {{4:$$}}; $1",
+			prompt:      "Keep {{3:$1}} and {{4:$$}}; {{1}}",
+			description: "Keep {{3:$1}} and {{4:$$}}; $1",
+			expanded:    "Keep $1 and $$; alpha",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "review.md"), []byte(tt.raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			r := NewCommandRegistry()
+			r.SetAgentDirs([]string{dir})
+			cmd, ok := r.Resolve("review")
+			if !ok {
+				t.Fatal("agent command did not resolve")
+			}
+			if cmd.Prompt != tt.prompt || cmd.Description != tt.description {
+				t.Errorf("resolved prompt/description = %q / %q, want %q / %q", cmd.Prompt, cmd.Description, tt.prompt, tt.description)
+			}
+			if got := ExpandPrompt(cmd.Prompt, []string{"alpha", "beta"}); got != tt.expanded {
+				t.Errorf("expanded = %q, want %q", got, tt.expanded)
+			}
+			all := r.ListAll()
+			if len(all) != 1 || all[0].Description != tt.description || all[0].Prompt != tt.prompt {
+				t.Fatalf("ListAll() = %+v, want same parsed command as Resolve", all)
+			}
+		})
 	}
 }
 

@@ -16,24 +16,26 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
 // cursorSession manages multi-turn conversations with the Cursor Agent CLI.
 // Each Send() launches a new `agent --print` process with --resume for continuity.
 type cursorSession struct {
-	cmd       string   // CLI binary name
-	extraArgs []string // extra args from cmd, prepended before agent args
-	workDir   string
-	model     string
-	mode      string
-	extraEnv  []string
-	events    chan core.Event
-	chatID    atomic.Value // stores string — Cursor chat/session ID
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
-	alive     atomic.Bool
+	allowedTools []string
+	cmd          string   // CLI binary name
+	extraArgs    []string // extra args from cmd, prepended before agent args
+	workDir      string
+	model        string
+	mode         string
+	extraEnv     []string
+	events       chan core.Event
+	chatID       atomic.Value // stores string — Cursor chat/session ID
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	alive        atomic.Bool
 
 	thinkingBuf strings.Builder // accumulate thinking deltas
 
@@ -80,19 +82,20 @@ type pendingInteractionQuery struct {
 	queryType string // e.g. "webFetchRequestQuery", "shellRequestQuery"
 }
 
-func newCursorSession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, resumeID string, extraEnv []string) (*cursorSession, error) {
+func newCursorSession(ctx context.Context, cmd string, extraArgs []string, workDir, model, mode, resumeID string, extraEnv, allowedTools []string) (*cursorSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &cursorSession{
-		cmd:       cmd,
-		extraArgs: extraArgs,
-		workDir:   workDir,
-		model:     model,
-		mode:      mode,
-		extraEnv:  extraEnv,
-		events:    make(chan core.Event, 64),
-		ctx:       sessionCtx,
-		cancel:    cancel,
+		allowedTools: append([]string(nil), allowedTools...),
+		cmd:          cmd,
+		extraArgs:    extraArgs,
+		workDir:      workDir,
+		model:        model,
+		mode:         mode,
+		extraEnv:     extraEnv,
+		events:       make(chan core.Event, 64),
+		ctx:          sessionCtx,
+		cancel:       cancel,
 	}
 	cs.alive.Store(true)
 
@@ -649,6 +652,15 @@ func (cs *cursorSession) handleInteractionQuery(raw map[string]any) {
 	if toolName == "" {
 		// Unknown query type — deny immediately to unblock Cursor.
 		cs.writeInteractionResponse(queryID, queryType, false, "unsupported query type")
+		return
+	}
+
+	// Only recognized approval queries may use the allowlist. Unknown query
+	// types retain their existing interactive path, even if their name matches.
+	knownApproval := (queryType == "shellRequestQuery" && toolName == "Bash") ||
+		(queryType == "webFetchRequestQuery" && toolName == "WebFetch")
+	if knownApproval && toolallowlist.Allows(cs.allowedTools, toolName) {
+		cs.writeInteractionResponse(queryID, queryType, true, "")
 		return
 	}
 

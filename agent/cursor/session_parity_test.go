@@ -40,7 +40,7 @@ func writeFakeAgent(t *testing.T, body string) string {
 func startFakeSession(t *testing.T, script string) *cursorSession {
 	t.Helper()
 	bin := writeFakeAgent(t, script)
-	cs, err := newCursorSession(context.Background(), bin, nil, t.TempDir(), "", "default", "", nil)
+	cs, err := newCursorSession(context.Background(), bin, nil, t.TempDir(), "", "default", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestSessionParity_ConcurrentSendRejected(t *testing.T) {
 }
 
 func TestSessionParity_SendAfterClose(t *testing.T) {
-	cs, err := newCursorSession(context.Background(), "agent", nil, t.TempDir(), "", "default", "", nil)
+	cs, err := newCursorSession(context.Background(), "agent", nil, t.TempDir(), "", "default", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestSessionParity_MultiToolStreamEqualsResult(t *testing.T) {
 }
 
 func TestSessionParity_StartFailureDoesNotLeakWait(t *testing.T) {
-	cs, err := newCursorSession(context.Background(), "/no/such/cursor-agent", nil, filepath.Join(t.TempDir(), "missing"), "", "default", "", nil)
+	cs, err := newCursorSession(context.Background(), "/no/such/cursor-agent", nil, filepath.Join(t.TempDir(), "missing"), "", "default", "", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

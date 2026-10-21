@@ -2,14 +2,155 @@ package cursor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
 )
+
+func TestAgent_AllowedToolsWorkspaceAndSessionSnapshots(t *testing.T) {
+	for _, input := range []any{[]string{"Bash", "bash"}, []any{"Bash", "bash", 7}} {
+		raw, err := New(map[string]any{"cmd": "go", "allowed_tools": input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := raw.(*Agent)
+		var auth core.ToolAuthorizer = a
+		if err := auth.AddAllowedTools("BASH", "WebFetch", "WebFetch"); err != nil {
+			t.Fatal(err)
+		}
+		want := []string{"Bash", "WebFetch"}
+		if !reflect.DeepEqual(auth.GetAllowedTools(), want) {
+			t.Fatalf("allowed tools = %v, want %v", auth.GetAllowedTools(), want)
+		}
+		got := auth.GetAllowedTools()
+		got[0] = "changed"
+		opts := a.WorkspaceAgentOptions()
+		childRaw, err := New(opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := childRaw.(*Agent)
+		opts["allowed_tools"].([]string)[0] = "changed"
+		if err := child.AddAllowedTools("Patch"); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(a.GetAllowedTools(), want) || !reflect.DeepEqual(child.GetAllowedTools(), []string{"Bash", "WebFetch", "Patch"}) {
+			t.Fatal("get/options/clone aliased the parent allowlist")
+		}
+
+		first, err := a.StartSession(context.Background(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer first.Close()
+		if err := a.AddAllowedTools("Patch"); err != nil {
+			t.Fatal(err)
+		}
+		second, err := a.StartSession(context.Background(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer second.Close()
+		if !reflect.DeepEqual(first.(*cursorSession).allowedTools, want) || !reflect.DeepEqual(second.(*cursorSession).allowedTools, []string{"Bash", "WebFetch", "Patch"}) {
+			t.Fatal("allowlist changes were not isolated to the next session")
+		}
+		first.(*cursorSession).allowedTools[0] = "changed"
+		if a.GetAllowedTools()[0] != "Bash" {
+			t.Fatal("session aliases agent allowlist")
+		}
+	}
+}
+
+type interactionBuffer struct{ bytes.Buffer }
+
+func (*interactionBuffer) Close() error { return nil }
+
+func TestHandleInteractionQuery_AllowedToolsAutoApprove(t *testing.T) {
+	for _, mode := range []string{"default", "plan", "ask", "force"} {
+		for _, tc := range []struct {
+			name, allowed, queryType string
+			request                  map[string]any
+		}{
+			{"shell", "bash", "shellRequestQuery", shellInteractionRequest(7, "pwd", false)},
+			{"webFetch", "WEBFETCH", "webFetchRequestQuery", webFetchInteractionRequest(7, "https://example.com", false)},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				cs := newTestSession(mode)
+				defer cs.cancel()
+				cs.allowedTools = []string{tc.allowed}
+				out := &interactionBuffer{}
+				cs.stdin = out
+				cs.handleInteractionQuery(tc.request)
+				if len(cs.events) != 0 || cs.pending != nil {
+					t.Fatal("allowed query emitted an event or left a pending request")
+				}
+				if out.Len() == 0 {
+					t.Fatal("allowed query did not write approved")
+				}
+				reply := readInteractionResponse(t, out)
+				response := reply["response"].(map[string]any)
+				key := strings.TrimSuffix(tc.queryType, "Query") + "Response"
+				result := response[key].(map[string]any)
+				if _, ok := result["approved"]; !ok || response["id"] != float64(7) || reply["query_type"] != tc.queryType {
+					t.Fatalf("response = %#v", reply)
+				}
+			})
+		}
+	}
+}
+
+func TestHandleInteractionQuery_AllowedToolsPreserveManualRequests(t *testing.T) {
+	for _, tc := range []struct {
+		name, allowed, tool string
+		request             map[string]any
+	}{
+		{"nonmatching", "Bash", "WebFetch", webFetchInteractionRequest(1, "https://example.com", false)},
+		{"exact-only", "Bas*", "Bash", shellInteractionRequest(1, "pwd", false)},
+		{"unknown", "mystery", "mystery", map[string]any{"subtype": "request", "query_type": "mysteryRequestQuery", "query": map[string]any{"id": float64(1)}}},
+		{"missing-args", "shell", "shell", map[string]any{"subtype": "request", "query_type": "shellRequestQuery", "query": map[string]any{"id": float64(1)}}},
+		{"question", "AskUserQuestion", "AskUserQuestion", map[string]any{"subtype": "request", "query_type": "AskUserQuestionQuery", "query": map[string]any{"id": float64(1)}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := newTestSession("default")
+			defer cs.cancel()
+			cs.allowedTools = []string{tc.allowed}
+			out := &interactionBuffer{}
+			cs.stdin = out
+			cs.handleInteractionQuery(tc.request)
+			select {
+			case ev := <-cs.events:
+				if ev.Type != core.EventPermissionRequest || ev.ToolName != tc.tool {
+					t.Fatalf("event = %+v", ev)
+				}
+			default:
+				t.Fatal("expected manual permission request")
+			}
+			if out.Len() != 0 {
+				t.Fatalf("manual request wrote an automatic response: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestHandleInteractionQuery_AllowedToolsIgnoreNonRequests(t *testing.T) {
+	cs := newTestSession("default")
+	defer cs.cancel()
+	cs.allowedTools = []string{"Bash"}
+	out := &interactionBuffer{}
+	cs.stdin = out
+	query := shellInteractionRequest(1, "pwd", false)
+	query["subtype"] = "response"
+	cs.handleInteractionQuery(query)
+	if out.Len() != 0 || len(cs.events) != 0 {
+		t.Fatal("non-request query was intercepted")
+	}
+}
 
 // newTestSession creates a cursorSession suitable for unit tests (no real CLI process).
 func newTestSession(mode string) *cursorSession {

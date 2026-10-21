@@ -125,16 +125,12 @@ func (r *CommandRegistry) Resolve(name string) (*CustomCommand, bool) {
 			if err != nil {
 				continue
 			}
-			content := strings.TrimSpace(string(data))
-			if content == "" {
+			cmd := parseAgentCommandFile(candidate, string(data))
+			if cmd == nil {
 				continue
 			}
 			slog.Debug("command: loaded agent command file", "path", mdPath)
-			return &CustomCommand{
-				Name:   candidate,
-				Prompt: content,
-				Source: "agent",
-			}, true
+			return cmd, true
 		}
 	}
 
@@ -167,27 +163,64 @@ func (r *CommandRegistry) ListAll() []*CustomCommand {
 			if seen[strings.ToLower(name)] {
 				continue
 			}
-			seen[strings.ToLower(name)] = true
-
-			desc := ""
 			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
-			if err == nil {
-				first, _, _ := strings.Cut(strings.TrimSpace(string(data)), "\n")
-				if len([]rune(first)) > 60 {
-					first = string([]rune(first)[:60]) + "..."
-				}
-				desc = first
+			if err != nil {
+				continue
 			}
-
-			result = append(result, &CustomCommand{
-				Name:        name,
-				Description: desc,
-				Source:      "agent",
-			})
+			if cmd := parseAgentCommandFile(name, string(data)); cmd != nil {
+				seen[strings.ToLower(name)] = true
+				result = append(result, cmd)
+			}
 		}
 	}
 
 	return result
+}
+
+// agentCommandPlaceholderRe consumes escaped dollars and entire digit runs in
+// one pass, so $$1 stays literal and $10 is never treated as $1 followed by 0.
+// Existing native templates, including their defaults, are left untouched.
+var agentCommandPlaceholderRe = regexp.MustCompile(`\{\{[^}]*\}\}|\$\$|\$ARGUMENTS|\$[0-9]+`)
+
+// parseAgentCommandFile strips optional frontmatter and normalizes file-backed
+// argument placeholders to the syntax understood by ExpandPrompt.
+func parseAgentCommandFile(name, raw string) *CustomCommand {
+	body := strings.TrimSpace(raw)
+	description := ""
+	lines := strings.Split(body, "\n")
+	if strings.TrimSpace(lines[0]) == "---" {
+		for i := 1; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i]) == "---" {
+				frontmatter := parseFrontmatter(strings.Join(lines[1:i], "\n"))
+				description = frontmatter["description"]
+				body = strings.TrimSpace(strings.Join(lines[i+1:], "\n"))
+				break
+			}
+		}
+	}
+	if body == "" {
+		return nil
+	}
+	if description == "" {
+		description, _, _ = strings.Cut(body, "\n")
+		description = strings.TrimSpace(description)
+		if runes := []rune(description); len(runes) > 60 {
+			description = string(runes[:60]) + "..."
+		}
+	}
+	prompt := agentCommandPlaceholderRe.ReplaceAllStringFunc(body, func(match string) string {
+		switch {
+		case match == "$$":
+			return "$"
+		case match == "$ARGUMENTS":
+			return "{{args}}"
+		case len(match) == 2 && match[0] == '$' && match[1] >= '1' && match[1] <= '9':
+			return "{{" + match[1:] + "}}"
+		default:
+			return match
+		}
+	})
+	return &CustomCommand{Name: name, Description: description, Prompt: prompt, Source: "agent"}
 }
 
 // placeholderRe matches {{1}}, {{2*}}, {{args}}, and variants with defaults like {{1:foo}}.

@@ -15,6 +15,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/chenhg5/cc-connect/agent/internal/skillroots"
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -33,6 +34,7 @@ func init() {
 //   - "full-auto": --sandbox workspace-write + approval_policy=never
 //   - "yolo":      --dangerously-bypass-approvals-and-sandbox
 type Agent struct {
+	allowedTools    []string
 	workDir         string
 	modelPinned     bool // SetModel overrides the active provider default
 	model           string
@@ -96,6 +98,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
+		allowedTools:    toolallowlist.Parse(opts["allowed_tools"]),
 		workDir:         workDir,
 		model:           model,
 		reasoningEffort: normalizeReasoningEffort(reasoningEffort),
@@ -514,6 +517,7 @@ func (a *Agent) SetSessionEnv(env []string) {
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.Lock()
+	allowedTools := append([]string(nil), a.allowedTools...)
 	mode := a.mode
 	model := a.model
 	reasoningEffort := a.reasoningEffort
@@ -552,7 +556,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt)
+		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, allowedTools)
 	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
@@ -640,7 +644,25 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 		}
 		opts["env"] = env
 	}
+	opts["allowed_tools"] = append([]string(nil), a.allowedTools...)
 	return opts
+}
+
+// ── CommandProvider implementation ────────────────────────────
+
+var _ core.CommandProvider = (*Agent)(nil)
+
+func (a *Agent) CommandDirs() []string {
+	workDir := a.GetWorkDir()
+	absDir, err := filepath.Abs(workDir)
+	if err != nil {
+		absDir = workDir
+	}
+	dirs := []string{filepath.Join(absDir, ".codex", "prompts")}
+	if home, err := a.effectiveCodexHome(); err == nil {
+		dirs = append(dirs, filepath.Join(home, "prompts"))
+	}
+	return dirs
 }
 
 // ── SkillProvider implementation ──────────────────────────────
@@ -901,3 +923,23 @@ func (a *Agent) PermissionModes() []core.PermissionModeInfo {
 			DescZh: "跳过所有审批和沙箱（危险）"},
 	}
 }
+
+// AddAllowedTools updates the allowlist for sessions started after this call.
+func (a *Agent) AddAllowedTools(tools ...string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.backend != "app_server" {
+		return fmt.Errorf("codex: /allow requires the app_server backend")
+	}
+	a.allowedTools = toolallowlist.Add(a.allowedTools, tools...)
+	return nil
+}
+
+// GetAllowedTools returns a copy of the configured allowlist.
+func (a *Agent) GetAllowedTools() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.allowedTools...)
+}
+
+var _ core.ToolAuthorizer = (*Agent)(nil)

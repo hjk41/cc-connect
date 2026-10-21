@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -19,6 +20,7 @@ func init() {
 
 // Agent runs an ACP (Agent Client Protocol) agent subprocess over stdio JSON-RPC.
 type Agent struct {
+	allowedTools []string
 	workDir      string
 	cmd          string
 	cliExtraArgs []string // extra args from cmd, prepended before args
@@ -212,6 +214,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	notify = strings.TrimSpace(notify)
 
 	return &Agent{
+		allowedTools:           toolallowlist.Parse(opts["allowed_tools"]),
 		workDir:                workDir,
 		cmd:                    cmdStr,
 		cliExtraArgs:           cliExtraArgs,
@@ -358,6 +361,7 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if len(a.configuredModels) > 0 {
 		opts["models"] = append([]core.ModelOption(nil), a.configuredModels...)
 	}
+	opts["allowed_tools"] = append([]string(nil), a.allowedTools...)
 	return opts
 }
 
@@ -369,6 +373,7 @@ func (a *Agent) SetSessionEnv(env []string) {
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
 	a.mu.RLock()
+	allowedTools := append([]string(nil), a.allowedTools...)
 	command := a.cmd
 	allArgs := append(append([]string{}, a.cliExtraArgs...), a.args...)
 	workDir := a.workDir
@@ -400,6 +405,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 
 	sess, err := newACPSession(ctx, acpSessionConfig{
+		allowedTools:           allowedTools,
 		command:                command,
 		args:                   allArgs,
 		extraEnv:               extra,
@@ -671,3 +677,20 @@ func lookupModeDesc(descs map[string]string, key string) string {
 func (a *Agent) reportSessionTitle(sessionID, title string) {
 	a.rememberTitle(sessionID, title)
 }
+
+// AddAllowedTools updates the allowlist for sessions started after this call.
+func (a *Agent) AddAllowedTools(tools ...string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.allowedTools = toolallowlist.Add(a.allowedTools, tools...)
+	return nil
+}
+
+// GetAllowedTools returns a copy of the configured allowlist.
+func (a *Agent) GetAllowedTools() []string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return append([]string(nil), a.allowedTools...)
+}
+
+var _ core.ToolAuthorizer = (*Agent)(nil)
