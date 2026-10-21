@@ -25,7 +25,14 @@ case "$1 $2" in
   *) exit 2 ;;
 esac
 MOCK
-chmod +x "$sync_test_dir/bin/gh"
+# GitHub runners need only standard shell tools for this test. Keep an
+# installed ripgrep from hiding accidental dependencies on developer tools.
+cat > "$sync_test_dir/bin/rg" <<'MOCK'
+#!/usr/bin/env bash
+echo 'FAIL: upstream sync tests must not require ripgrep' >&2
+exit 127
+MOCK
+chmod +x "$sync_test_dir/bin/gh" "$sync_test_dir/bin/rg"
 export PATH="$sync_test_dir/bin:$PATH"
 
 git init --quiet --initial-branch=main "$sync_test_dir/author"
@@ -59,7 +66,7 @@ sync_sha=$(git --git-dir="$sync_test_dir/origin.git" rev-parse refs/heads/automa
 test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse main)" = "$base_sha"
 test "$(git -C "$sync_test_dir/work" rev-parse HEAD^1)" = "$base_sha"
 test "$(git -C "$sync_test_dir/work" rev-parse HEAD^2)" = "$upstream_sha"
-rg -q '^pr create ' "$SYNC_TEST_GH_LOG"
+grep -q '^pr create ' "$SYNC_TEST_GH_LOG"
 echo 'PASS: sync preserves merge parents, opens a PR, and leaves main unchanged'
 
 git -C "$sync_test_dir/work" checkout --quiet main
@@ -67,7 +74,7 @@ git -C "$sync_test_dir/work" reset --quiet --hard "$base_sha"
 export SYNC_TEST_OPEN_PR=7
 run_sync > "$sync_test_dir/output" 2>&1
 test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse refs/heads/automation/upstream-sync)" = "$sync_sha"
-rg -q '^pr edit 7 ' "$SYNC_TEST_GH_LOG"
+grep -q '^pr edit 7 ' "$SYNC_TEST_GH_LOG"
 echo 'PASS: repeated sync reuses the existing merge and PR'
 
 printf 'upstream edit\n' > "$sync_test_dir/author/base.txt"
@@ -85,5 +92,5 @@ fi
 test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse main)" = "$fork_sha"
 test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse refs/heads/automation/upstream-sync)" = "$sync_sha"
 test -z "$(git -C "$sync_test_dir/work" status --porcelain)"
-rg -q '^base.txt$' "$GITHUB_STEP_SUMMARY"
+grep -q '^base.txt$' "$GITHUB_STEP_SUMMARY"
 echo 'PASS: conflicts are reported and aborted without pushing either branch'
