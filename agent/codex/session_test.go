@@ -1183,7 +1183,7 @@ while (-not (Test-Path $env:CODEX_RELEASE_FILE)) { Start-Sleep -Milliseconds 10 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cs.Close()
+	defer func() { _ = cs.Close() }()
 	if err := cs.Send("first", "", nil, nil); err != nil {
 		t.Fatal(err)
 	}
