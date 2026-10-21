@@ -11,6 +11,8 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
+var _ core.LiveReasoningSwitcher = (*acpSession)(nil)
+
 // errEmptyACPSessionID is returned by absorbSessionResult when session/new
 // omits sessionId. session/load may legally omit it; the caller decides.
 var errEmptyACPSessionID = errors.New("empty sessionId")
@@ -27,9 +29,11 @@ type acpConfigOption struct {
 }
 
 type acpConfigOptionChoice struct {
-	Value       string `json:"value"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Value       string                  `json:"value"`
+	Name        string                  `json:"name"`
+	Description string                  `json:"description,omitempty"`
+	Group       string                  `json:"group,omitempty"`
+	Options     []acpConfigOptionChoice `json:"options,omitempty"`
 }
 
 // acpLegacyModel is one entry of the unstable ACP models.availableModels list.
@@ -239,7 +243,7 @@ func (s *acpSession) snapshotModelControls() (acpConfigOption, bool, bool, strin
 
 func (s *acpSession) applyModelViaConfigOption(sid, model string, opt acpConfigOption) string {
 	values := configChoiceValues(opt)
-	value, implied := s.resolveModelValue(model, values)
+	value, implied := s.resolveModelValue(model, opt)
 	if value == "" {
 		s.addStartupWarning(fmt.Sprintf("model %q is not an advertised option and was not applied", model))
 		slog.Warn("acp: model not applied", "model", model, "session_id", sid, "allowed", strings.Join(values, ","))
@@ -260,11 +264,13 @@ func (s *acpSession) applyModelViaConfigOption(sid, model string, opt acpConfigO
 }
 
 // resolveModelValue returns an option value the agent accepts.
-// An exact configured id skips the resolver. impliedEffort is set only
-// when the resolver produced that value.
-func (s *acpSession) resolveModelValue(model string, values []string) (string, string) {
-	if exactConfigChoice(values, model) {
-		return model, ""
+// An exact value, a case-insensitive display name, or an inner model id
+// extracted from a JSON-array value skips the resolver. impliedEffort is
+// set only when the resolver produced that value.
+func (s *acpSession) resolveModelValue(model string, opt acpConfigOption) (string, string) {
+	values := configChoiceValues(opt)
+	if matched := matchModelChoice(opt, model); matched != "" {
+		return matched, ""
 	}
 	if s.modelResolver == nil {
 		return "", ""
@@ -276,6 +282,43 @@ func (s *acpSession) resolveModelValue(model string, values []string) (string, s
 		return "", ""
 	}
 	return value, implied
+}
+
+// SetLiveReasoningEffort applies thought_level on the running session.
+// It returns false when the session is closed, the agent did not
+// advertise the option, or the value is not one of its choices.
+func (s *acpSession) SetLiveReasoningEffort(effort string) bool {
+	if s == nil || !s.alive.Load() || s.tr == nil {
+		return false
+	}
+	effort = strings.TrimSpace(effort)
+	if effort == "" {
+		return false
+	}
+	sid := s.currentACPSessionID()
+	if sid == "" {
+		return false
+	}
+	opt, ok := s.thoughtLevelOption()
+	if !ok {
+		return false
+	}
+	matched, allowed := matchConfigChoice(opt, effort)
+	if matched == "" {
+		slog.Warn("acp: live reasoning effort rejected",
+			"effort", effort, "session_id", sid, "allowed", strings.Join(allowed, ","))
+		return false
+	}
+	if opt.CurrentValue.String() == matched {
+		return true
+	}
+	if err := s.setConfigOption(sid, opt.ID, matched); err != nil {
+		slog.Warn("acp: live reasoning effort failed",
+			"effort", matched, "session_id", sid, "error", err)
+		return false
+	}
+	slog.Info("acp: live reasoning effort applied", "effort", matched, "session_id", sid)
+	return true
 }
 
 func (s *acpSession) applyThoughtLevel(effort string) {
@@ -430,14 +473,79 @@ func findConfigOption(opts []acpConfigOption, name string) (acpConfigOption, boo
 }
 
 func configChoiceValues(opt acpConfigOption) []string {
+	leaves := flattenChoices(opt.Options)
 	var out []string
-	for _, c := range opt.Options {
+	for _, c := range leaves {
 		v := strings.TrimSpace(c.Value)
 		if v != "" {
 			out = append(out, v)
 		}
 	}
 	return out
+}
+
+// flattenChoices walks grouped select options. A node with nested options
+// is a group; only leaves (a value and no children) are selectable.
+func flattenChoices(choices []acpConfigOptionChoice) []acpConfigOptionChoice {
+	var out []acpConfigOptionChoice
+	var walk func([]acpConfigOptionChoice)
+	walk = func(in []acpConfigOptionChoice) {
+		for _, c := range in {
+			if len(c.Options) > 0 {
+				walk(c.Options)
+				continue
+			}
+			if strings.TrimSpace(c.Value) == "" {
+				continue
+			}
+			out = append(out, c)
+		}
+	}
+	walk(choices)
+	return out
+}
+
+// matchModelChoice maps user input onto a selectable model value.
+// It accepts the opaque option value, the option display name
+// (case-insensitive), or the inner model id of a JSON-array value
+// such as ["provider","deepseek-flash"].
+func matchModelChoice(opt acpConfigOption, want string) string {
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return ""
+	}
+	leaves := flattenChoices(opt.Options)
+	for _, c := range leaves {
+		if strings.TrimSpace(c.Value) == want {
+			return strings.TrimSpace(c.Value)
+		}
+	}
+	for _, c := range leaves {
+		if name := strings.TrimSpace(c.Name); name != "" && strings.EqualFold(name, want) {
+			return strings.TrimSpace(c.Value)
+		}
+	}
+	for _, c := range leaves {
+		if id := innerModelID(c.Value); id != "" && strings.EqualFold(id, want) {
+			return strings.TrimSpace(c.Value)
+		}
+	}
+	return ""
+}
+
+// innerModelID returns the last string of a JSON array value. Provider
+// and model are stored together as ["provider","model-id"]; the model
+// id is the last element. Non-array values return empty.
+func innerModelID(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "[") {
+		return ""
+	}
+	var parts []string
+	if json.Unmarshal([]byte(value), &parts) != nil || len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(parts[len(parts)-1])
 }
 
 func exactConfigChoice(values []string, want string) bool {
@@ -455,9 +563,11 @@ func exactConfigChoice(values []string, want string) bool {
 
 func matchConfigChoice(opt acpConfigOption, want string) (string, []string) {
 	values := configChoiceValues(opt)
-	for _, v := range values {
-		if strings.EqualFold(v, want) {
-			return v, values
+	want = strings.TrimSpace(want)
+	for _, c := range flattenChoices(opt.Options) {
+		value := strings.TrimSpace(c.Value)
+		if strings.EqualFold(value, want) || (strings.TrimSpace(c.Name) != "" && strings.EqualFold(c.Name, want)) {
+			return value, values
 		}
 	}
 	return "", values
@@ -469,7 +579,7 @@ func modeDescriptionsFromConfig(opts []acpConfigOption) map[string]string {
 		return nil
 	}
 	out := make(map[string]string)
-	for _, c := range opt.Options {
+	for _, c := range flattenChoices(opt.Options) {
 		id := strings.TrimSpace(c.Value)
 		desc := strings.TrimSpace(c.Description)
 		if id == "" || desc == "" {
@@ -484,8 +594,9 @@ func modeDescriptionsFromConfig(opts []acpConfigOption) map[string]string {
 }
 
 func modelOptionsFromConfig(opt acpConfigOption) []core.ModelOption {
-	out := make([]core.ModelOption, 0, len(opt.Options))
-	for _, c := range opt.Options {
+	leaves := flattenChoices(opt.Options)
+	out := make([]core.ModelOption, 0, len(leaves))
+	for _, c := range leaves {
 		name := strings.TrimSpace(c.Value)
 		if name == "" {
 			continue
@@ -539,7 +650,7 @@ func (s *acpSession) GetModelDisplayName() string {
 		return ""
 	}
 	current := opt.CurrentValue.String()
-	for _, c := range opt.Options {
+	for _, c := range flattenChoices(opt.Options) {
 		if c.Value == current {
 			return strings.TrimSpace(c.Name)
 		}

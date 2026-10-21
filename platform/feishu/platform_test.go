@@ -1675,6 +1675,45 @@ func TestFormatProgressToolInput_TodoWrite(t *testing.T) {
 	}
 }
 
+func TestProgressToolUse_KeepsQuotedShellCommand(t *testing.T) {
+	inputs := []string{
+		"ls -la keep.txt 2>&1; echo \"---\"; pwd\n# Check keep.txt existence and location",
+		"rm /private/tmp/dsh-live/keep.txt; echo \"exit code: $?\"; ls -la keep.txt 2>&1\n# ...",
+	}
+	for _, input := range inputs {
+		for _, tool := range []string{"Bash", "shell"} {
+			text := progressToolUseContent(core.ProgressCardEntry{
+				Kind: core.ProgressEntryToolUse,
+				Tool: tool,
+				Text: input,
+			})
+			command := strings.SplitN(input, "\n", 2)[0]
+			if !strings.Contains(text, command) {
+				t.Errorf("tool %s rendered %q, want full command %q", tool, text, command)
+			}
+			if strings.Contains(text, "```bash\n---\n```") || strings.Contains(text, "```bash\nexit code: $?\n```") {
+				t.Errorf("tool %s extracted a quoted fragment from %q: %s", tool, input, text)
+			}
+		}
+	}
+
+	// A prose summary still uses the captured command, and a non-command
+	// tool still prefers its quoted argument.
+	if got := buildToolDisplay("Bash", `Run command "ls -la"`).Detail; got != "ls -la" {
+		t.Fatalf("summary detail = %q, want ls -la", got)
+	}
+	if got := buildToolDisplay("Read", `see the file "main.go"`).Detail; got != "main.go" {
+		t.Fatalf("read detail = %q, want main.go", got)
+	}
+}
+
+func progressToolUseContent(item core.ProgressCardEntry) string {
+	elem := renderProgressEntryElement(item, "zh")
+	text, _ := elem["text"].(map[string]any)
+	content, _ := text["content"].(string)
+	return content
+}
+
 func TestFormatProgressToolInput_OtherTools(t *testing.T) {
 	// Non-TodoWrite tools should use default formatting
 	result := formatProgressToolInput("Bash", "ls -la")

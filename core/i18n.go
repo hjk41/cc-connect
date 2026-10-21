@@ -231,6 +231,7 @@ const (
 	MsgQuietGlobalOn             MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff            MsgKey = "quiet_global_off"
 	MsgModeChanged               MsgKey = "mode_changed"
+	MsgModeChangedOnResume       MsgKey = "mode_changed_on_resume"
 	MsgModeNotSupported          MsgKey = "mode_not_supported"
 	MsgSessionRestarting         MsgKey = "session_restarting"
 	MsgSessionNotStarted         MsgKey = "session_not_started"
@@ -331,18 +332,20 @@ const (
 	MsgCronBtnUnmute          MsgKey = "cron_btn_unmute"
 	MsgCronBtnDelete          MsgKey = "cron_btn_delete"
 
-	MsgStatusTitle           MsgKey = "status_title"
-	MsgReplyFooterRemaining  MsgKey = "reply_footer_remaining"
-	MsgModelCurrent          MsgKey = "model_current"
-	MsgModelChanged          MsgKey = "model_changed"
-	MsgModelChangeFailed     MsgKey = "model_change_failed"
-	MsgModelCardSwitching    MsgKey = "model_card_switching"
-	MsgModelCardSwitched     MsgKey = "model_card_switched"
-	MsgModelCardSwitchFailed MsgKey = "model_card_switch_failed"
-	MsgModelNotSupported     MsgKey = "model_not_supported"
-	MsgReasoningCurrent      MsgKey = "reasoning_current"
-	MsgReasoningChanged      MsgKey = "reasoning_changed"
-	MsgReasoningNotSupported MsgKey = "reasoning_not_supported"
+	MsgStatusTitle              MsgKey = "status_title"
+	MsgReplyFooterRemaining     MsgKey = "reply_footer_remaining"
+	MsgModelCurrent             MsgKey = "model_current"
+	MsgModelChanged             MsgKey = "model_changed"
+	MsgModelChangeFailed        MsgKey = "model_change_failed"
+	MsgModelCardSwitching       MsgKey = "model_card_switching"
+	MsgModelCardSwitched        MsgKey = "model_card_switched"
+	MsgModelCardSwitchFailed    MsgKey = "model_card_switch_failed"
+	MsgModelNotSupported        MsgKey = "model_not_supported"
+	MsgReasoningCurrent         MsgKey = "reasoning_current"
+	MsgReasoningChanged         MsgKey = "reasoning_changed"
+	MsgReasoningChangedLive     MsgKey = "reasoning_changed_live"
+	MsgReasoningChangedOnResume MsgKey = "reasoning_changed_on_resume"
+	MsgReasoningNotSupported    MsgKey = "reasoning_not_supported"
 
 	MsgCompressNotSupported MsgKey = "compress_not_supported"
 	MsgCompressing          MsgKey = "compressing"
@@ -972,6 +975,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，新會話將使用此模式。",
 		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。新しいセッションで有効になります。",
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Las nuevas sesiones usarán este modo.",
+	},
+	MsgModeChangedOnResume: {
+		LangEnglish:            "🔄 Permission mode switched to **%s**. It applies on the next message in this conversation.",
+		LangChinese:            "🔄 权限模式已切换为 **%s**，下一条消息将在当前会话中使用此模式。",
+		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，下一則訊息將在目前會話中使用此模式。",
+		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。この会話の次のメッセージから有効になります。",
+		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Se aplica en el siguiente mensaje de esta conversación.",
 	},
 	MsgModeNotSupported: {
 		LangEnglish:            "This agent does not support permission mode switching.",
@@ -2324,6 +2334,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "推理強度已切換為 `%s`，新會話將使用此設定。",
 		LangJapanese:           "推論強度を `%s` に切り替えました。新しいセッションで使用されます。",
 		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Las nuevas sesiones usarán esta configuración.",
+	},
+	MsgReasoningChangedLive: {
+		LangEnglish:            "Reasoning effort switched to `%s`. The current session is updated.",
+		LangChinese:            "推理强度已切换为 `%s`，当前会话已立即生效。",
+		LangTraditionalChinese: "推理強度已切換為 `%s`，目前會話已立即生效。",
+		LangJapanese:           "推論強度を `%s` に切り替えました。現在のセッションにすぐに反映されます。",
+		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. La sesión actual ya está actualizada.",
+	},
+	MsgReasoningChangedOnResume: {
+		LangEnglish:            "Reasoning effort switched to `%s`. It applies on the next message in this conversation.",
+		LangChinese:            "推理强度已切换为 `%s`，下一条消息将在当前会话中使用此设置。",
+		LangTraditionalChinese: "推理強度已切換為 `%s`，下一則訊息將在目前會話中使用此設定。",
+		LangJapanese:           "推論強度を `%s` に切り替えました。この会話の次のメッセージから有効になります。",
+		LangSpanish:            "Esfuerzo de razonamiento cambiado a `%s`. Se aplica en el siguiente mensaje de esta conversación.",
 	},
 	MsgReasoningNotSupported: {
 		LangEnglish:            "This agent does not support reasoning effort switching.",

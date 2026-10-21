@@ -330,6 +330,22 @@ func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, age
 	return w
 }
 
+// userVisibleAgentName is the label shown on progress cards and session
+// lists. Agents that implement AgentDoctorInfo supply it (for example a
+// product name that is not the config type). Otherwise the progress alias
+// table, then a capitalized type name, is used.
+func userVisibleAgentName(agent Agent) string {
+	if agent == nil {
+		return "Agent"
+	}
+	if info, ok := agent.(AgentDoctorInfo); ok {
+		if label := strings.TrimSpace(info.CLIDisplayName()); label != "" {
+			return label
+		}
+	}
+	return normalizeProgressAgentLabel(agent.Name())
+}
+
 func normalizeProgressAgentLabel(name string) string {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "agent":

@@ -5570,6 +5570,86 @@ func TestCmdReasoning_SwitchesEffortAndResetsSession(t *testing.T) {
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Reasoning effort switched to `high`") {
 		t.Fatalf("sent = %v, want reasoning changed message", p.sent)
 	}
+	if !strings.Contains(p.sent[0], "New sessions will use this setting") {
+		t.Fatalf("sent = %q, want new-session wording", p.sent[0])
+	}
+}
+
+type stubLiveReasoningSession struct {
+	stubAgentSession
+	efforts []string
+}
+
+func (s *stubLiveReasoningSession) SetLiveReasoningEffort(effort string) bool {
+	s.efforts = append(s.efforts, effort)
+	return true
+}
+
+type resumeReasoningAgent struct {
+	stubModelModeAgent
+}
+
+func (a *resumeReasoningAgent) AppliesReasoningOnResume() bool { return true }
+
+func TestCmdReasoning_LiveApplyKeepsSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubModelModeAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangChinese)
+	key := "test:user1"
+	live := &stubLiveReasoningSession{}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = &interactiveState{agentSession: live, platform: p, replyCtx: "ctx"}
+	e.interactiveMu.Unlock()
+
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("existing-session", "stub")
+	session.AddHistory("user", "hello")
+
+	e.cmdReasoning(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"low"})
+
+	if len(live.efforts) != 1 || live.efforts[0] != "low" {
+		t.Fatalf("live efforts = %v, want [low]", live.efforts)
+	}
+	if session.GetAgentSessionID() != "existing-session" {
+		t.Fatalf("agent session id = %q, want existing-session", session.GetAgentSessionID())
+	}
+	if len(session.GetHistory(0)) != 1 {
+		t.Fatalf("history len = %d, want 1", len(session.GetHistory(0)))
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "当前会话已立即生效") {
+		t.Fatalf("sent = %v, want live reasoning reply", p.sent)
+	}
+	if strings.Contains(p.sent[0], "新会话") {
+		t.Fatalf("sent = %q, want no new-session wording", p.sent[0])
+	}
+}
+
+func TestCmdReasoning_ResumeApplierKeepsSession(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &resumeReasoningAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	key := "test:user1"
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("keep-me", "stub")
+	session.AddHistory("user", "hello")
+
+	e.cmdReasoning(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"low"})
+
+	if agent.GetReasoningEffort() != "low" {
+		t.Fatalf("effort = %q, want low", agent.GetReasoningEffort())
+	}
+	if session.GetAgentSessionID() != "keep-me" {
+		t.Fatalf("agent session id = %q, want keep-me", session.GetAgentSessionID())
+	}
+	if len(session.GetHistory(0)) != 1 {
+		t.Fatalf("history len = %d, want 1", len(session.GetHistory(0)))
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "next message in this conversation") {
+		t.Fatalf("sent = %v", p.sent)
+	}
+	if strings.Contains(p.sent[0], "New sessions will use this setting") {
+		t.Fatalf("sent = %q", p.sent[0])
+	}
 }
 
 func TestCmdReasoning_RejectsMinimal(t *testing.T) {
@@ -5913,6 +5993,111 @@ func TestCmdMode_AppliesLiveModeWithoutReset(t *testing.T) {
 		t.Fatalf("agent mode = %q, want yolo", got)
 	}
 }
+
+type resumeModeAgent struct {
+	stubModelModeAgent
+}
+
+func (a *resumeModeAgent) Name() string              { return "dsh" }
+func (a *resumeModeAgent) CLIBinaryName() string     { return "dsh" }
+func (a *resumeModeAgent) CLIDisplayName() string    { return "DeepSeek Harness" }
+func (a *resumeModeAgent) AppliesModeOnResume() bool { return true }
+
+func TestCmdMode_ResumeApplierSaysNextMessage(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &resumeModeAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	key := "test:user1"
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("keep-me", "dsh")
+	session.AddHistory("user", "hello")
+
+	e.cmdMode(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, []string{"yolo"})
+
+	if session.GetAgentSessionID() != "keep-me" {
+		t.Fatalf("agent session id = %q, want keep-me", session.GetAgentSessionID())
+	}
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "next message in this conversation") {
+		t.Fatalf("sent = %v", p.sent)
+	}
+	if strings.Contains(p.sent[0], "New sessions will use this mode") {
+		t.Fatalf("sent = %q", p.sent[0])
+	}
+}
+
+func TestExecuteCardAction_ResumeApplierKeepsSession(t *testing.T) {
+	agent := &resumeModeAgent{}
+	e := NewEngine("test", agent, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+	key := "test:user1"
+	session := e.sessions.GetOrCreateActive(key)
+	session.SetAgentSessionID("keep-me", "dsh")
+	session.AddHistory("user", "hello")
+
+	e.executeCardAction("/mode", "plan", key)
+
+	if session.GetAgentSessionID() != "keep-me" {
+		t.Fatalf("agent session id = %q, want keep-me", session.GetAgentSessionID())
+	}
+	if len(session.GetHistory(0)) != 1 {
+		t.Fatalf("history len = %d, want 1", len(session.GetHistory(0)))
+	}
+
+	plain := &stubModelModeAgent{}
+	e2 := NewEngine("test", plain, []Platform{&stubPlatformEngine{n: "plain"}}, "", LangEnglish)
+	session2 := e2.sessions.GetOrCreateActive(key)
+	session2.SetAgentSessionID("drop-me", "stub")
+	session2.AddHistory("user", "hello")
+	e2.executeCardAction("/mode", "yolo", key)
+	if session2.GetAgentSessionID() != "" {
+		t.Fatalf("agent session id = %q, want cleared", session2.GetAgentSessionID())
+	}
+}
+
+func TestFormatUsageReport_BalanceWithoutAccount(t *testing.T) {
+	report := &UsageReport{
+		Provider: "deepseek",
+		Plan:     "DeepSeek",
+		Credits:  &UsageCredits{HasCredits: true, Balance: "CNY 71.34"},
+	}
+	got := formatUsageReport(report, LangChinese)
+	if !strings.Contains(got, "余额：CNY 71.34 (DeepSeek)") {
+		t.Fatalf("usage = %q", got)
+	}
+	if strings.Contains(got, "账号") {
+		t.Fatalf("balance rendered as an account: %q", got)
+	}
+	en := formatUsageReport(report, LangEnglish)
+	if !strings.Contains(en, "Balance: CNY 71.34 (DeepSeek)") {
+		t.Fatalf("english usage = %q", en)
+	}
+}
+
+func TestRenderListCard_UsesDisplayName(t *testing.T) {
+	agent := &displayNameListAgent{stubListAgent: stubListAgent{sessions: []AgentSessionInfo{{
+		ID:      "s1",
+		Summary: "hello",
+	}}}}
+	p := &stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	card, err := e.renderListCard("test:user1", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Header == nil || !strings.Contains(card.Header.Title, "DeepSeek Harness") {
+		t.Fatalf("title = %#v", card.Header)
+	}
+	if strings.Contains(card.Header.Title, "dsh") {
+		t.Fatalf("title = %q", card.Header.Title)
+	}
+}
+
+type displayNameListAgent struct {
+	stubListAgent
+}
+
+func (a *displayNameListAgent) Name() string           { return "dsh" }
+func (a *displayNameListAgent) CLIBinaryName() string  { return "dsh" }
+func (a *displayNameListAgent) CLIDisplayName() string { return "DeepSeek Harness" }
 
 func TestCmdStatus_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 	p := &stubPlatformEngine{n: "plain"}
@@ -8246,6 +8431,30 @@ func TestSetupMemoryFile_NativeAgent(t *testing.T) {
 	result, _, _ := e.setupMemoryFile()
 	if result != setupNative {
 		t.Fatalf("result = %d, want setupNative", result)
+	}
+}
+
+type stubFalsePromptAgent struct {
+	stubMemoryAgent
+}
+
+func (a *stubFalsePromptAgent) HasSystemPromptSupport() bool { return false }
+
+func TestSetupMemoryFile_FalseSystemPromptSupportWritesInstructions(t *testing.T) {
+	tmpDir := t.TempDir()
+	memFile := filepath.Join(tmpDir, "AGENTS.md")
+
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubFalsePromptAgent{stubMemoryAgent: stubMemoryAgent{memFile: memFile}}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+
+	result, _, err := e.setupMemoryFile()
+	if result != setupOK {
+		t.Fatalf("result = %d, want setupOK; err = %v", result, err)
+	}
+	content, _ := os.ReadFile(memFile)
+	if !strings.Contains(string(content), ccConnectInstructionMarker) {
+		t.Fatal("expected instruction marker when HasSystemPromptSupport is false")
 	}
 }
 

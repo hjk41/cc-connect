@@ -73,6 +73,19 @@ type acpSession struct {
 	// When true, Send transmits images as ACP image content blocks.
 	promptImages bool
 
+	// resumeSupported / closeSupported come from initialize
+	// sessionCapabilities. loadSession is passed separately because it is
+	// a bool, not an object.
+	resumeSupported bool
+	closeSupported  bool
+
+	// createdFresh is true after session/new. A resumed session does not
+	// get promptPrefix, which is only for the first turn of a new session.
+	createdFresh bool
+	promptPrefix string
+	prefixed     atomic.Bool
+	closeOnce    sync.Once
+
 	// modeAliases rewrites user mode names before they are matched
 	// against the modes this session advertised. Copied at start.
 	modeAliases map[string]string
@@ -132,6 +145,7 @@ type acpSessionConfig struct {
 	compactionNotifyMethod string
 	showModelName          bool
 	modeAliases            map[string]string
+	promptPrefix           string
 	callbacks              sessionCallbacks // may be nil
 }
 
@@ -154,6 +168,7 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 		compactCommand:         cfg.compactCommand,
 		compactionNotifyMethod: cfg.compactionNotifyMethod,
 		showModelDisplayName:   cfg.showModelName,
+		promptPrefix:           strings.TrimSpace(cfg.promptPrefix),
 		updateNotify:           make(chan struct{}, 1),
 	}
 	s.alive.Store(true)
@@ -255,9 +270,13 @@ func (s *acpSession) applyInitialize(initOut acpInitializeResult) {
 	listSupported := sessionListSupported(&initOut)
 	deleteSupported := sessionDeleteSupported(&initOut)
 	s.promptImages = initOut.AgentCapabilities.PromptCapabilities.Image
+	s.resumeSupported = sessionResumeSupported(&initOut)
+	s.closeSupported = sessionCloseSupported(&initOut)
 	slog.Debug("acp: initialized",
 		"protocol", initOut.ProtocolVersion,
 		"load_session", initOut.AgentCapabilities.LoadSession,
+		"resume_session", s.resumeSupported,
+		"close_session", s.closeSupported,
 		"list_sessions", listSupported,
 		"delete_session", deleteSupported,
 		"prompt_images", s.promptImages,
@@ -286,7 +305,37 @@ func (s *acpSession) openOrCreateSession(resumeSessionID string, loadSupported b
 	if wantResume && loadSupported && s.tryLoadSession(resumeSessionID) {
 		return nil
 	}
+	// session/load stays the resume path when it is advertised. Agents that
+	// omit loadSession but advertise sessionCapabilities.resume (an object,
+	// not a bool) are resumed with session/resume instead of session/new.
+	if wantResume && !loadSupported && s.resumeSupported && s.tryResumeSession(resumeSessionID) {
+		return nil
+	}
 	return s.createSession()
+}
+
+// tryResumeSession reconnects a persisted session. Like session/load, a
+// successful result that omits sessionId keeps the id we asked for.
+// replaying is set so a server that replays history cannot fill the event
+// channel before StartSession returns. Servers that do not replay are
+// unaffected.
+func (s *acpSession) tryResumeSession(resumeSessionID string) bool {
+	s.replaying.Store(true)
+	defer s.replaying.Store(false)
+	res, err := s.tr.call(s.ctx, "session/resume", map[string]any{
+		"sessionId":  resumeSessionID,
+		"cwd":        canonicalCwd(s.workDir),
+		"mcpServers": []any{},
+	})
+	if err != nil {
+		slog.Warn("acp: session/resume failed, starting new session", "error", err)
+		return false
+	}
+	if err := s.absorbSessionResult(res, false); err != nil {
+		slog.Warn("acp: session/resume parse failed, starting new session", "error", err)
+		return false
+	}
+	return true
 }
 
 // tryLoadSession resumes an existing session. A successful load that omits
@@ -325,6 +374,7 @@ func (s *acpSession) createSession() error {
 		}
 		return fmt.Errorf("acp: parse session/new: %w", err)
 	}
+	s.createdFresh = true
 	return nil
 }
 
@@ -770,7 +820,16 @@ func (s *acpSession) preparePrompt(prompt, messageID string, images []core.Image
 	filePaths := core.SaveFilesToDisk(s.workDir, messageID, files)
 	prompt = core.AppendFileRefs(prompt, filePaths)
 	if len(images) > 0 && !s.promptImages {
+		// Agents that advertise promptCapabilities.image=false cannot take
+		// inline image blocks. Save the bytes and reference the path.
 		prompt = s.appendImageRefs(prompt, images)
+	}
+	if s.createdFresh && s.promptPrefix != "" && s.prefixed.CompareAndSwap(false, true) {
+		if strings.TrimSpace(prompt) == "" {
+			prompt = s.promptPrefix
+		} else {
+			prompt = s.promptPrefix + "\n\n" + prompt
+		}
 	}
 	return prompt, buildPromptBlocks(prompt, images, s.promptImages)
 }
@@ -897,27 +956,51 @@ func (s *acpSession) Alive() bool {
 	return s.alive.Load()
 }
 
+// requestSessionClose asks the agent to flush and dispose the session
+// before the process is killed. It runs only when initialize advertised
+// sessionCapabilities.close. Failures are logged; Close still tears down
+// the process.
+func (s *acpSession) requestSessionClose() {
+	if s == nil || !s.closeSupported || s.tr == nil {
+		return
+	}
+	sid := s.currentACPSessionID()
+	if sid == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, err := s.tr.call(ctx, "session/close", map[string]any{"sessionId": sid}); err != nil {
+		slog.Debug("acp: session/close failed", "session_id", sid, "error", err)
+	}
+}
+
 func (s *acpSession) Close() error {
-	s.alive.Store(false)
-	s.cancel()
-	if s.cmd != nil && s.cmd.Process != nil {
-		_ = s.cmd.Process.Kill()
-	}
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		close(s.events)
-	case <-time.After(8 * time.Second):
-		slog.Warn("acp: close timed out waiting for I/O loop")
-	}
+	s.closeOnce.Do(func() {
+		s.requestSessionClose()
+		s.alive.Store(false)
+		s.cancel()
+		if s.cmd != nil && s.cmd.Process != nil {
+			_ = s.cmd.Process.Kill()
+		}
+		done := make(chan struct{})
+		go func() {
+			s.wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+			close(s.events)
+		case <-time.After(8 * time.Second):
+			slog.Warn("acp: close timed out waiting for I/O loop")
+		}
+	})
 	return nil
 }
 
 // summarizeACPToolInput extracts a human-readable summary from ACP tool rawInput.
+// A shell command is the first line so a renderer that keeps only that line
+// still shows the command. A description, when present, follows as a comment.
 func summarizeACPToolInput(kind string, raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -931,11 +1014,8 @@ func summarizeACPToolInput(kind string, raw json.RawMessage) string {
 	}
 	switch strings.ToLower(kind) {
 	case "bash", "shell", "terminal", "execute":
-		if cmd, ok := m["command"].(string); ok {
-			if desc, ok := m["description"].(string); ok && desc != "" {
-				return "# " + desc + "\n" + cmd
-			}
-			return cmd
+		if summary, ok := commandWithDescription(m); ok {
+			return summary
 		}
 	case "read", "write", "edit":
 		if fp, ok := m["file_path"].(string); ok {
@@ -945,15 +1025,24 @@ func summarizeACPToolInput(kind string, raw json.RawMessage) string {
 			return fp
 		}
 	}
-	// Fallback: try extracting command with description before formatting JSON.
-	if cmd, ok := m["command"].(string); ok {
-		if desc, ok := m["description"].(string); ok && desc != "" {
-			return "# " + desc + "\n" + cmd
-		}
-		return cmd
+	if summary, ok := commandWithDescription(m); ok {
+		return summary
 	}
 	b, _ := json.MarshalIndent(m, "", "  ")
 	return string(b)
+}
+
+func commandWithDescription(m map[string]any) (string, bool) {
+	cmd, ok := m["command"].(string)
+	if !ok || strings.TrimSpace(cmd) == "" {
+		return "", false
+	}
+	desc, _ := m["description"].(string)
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return cmd, true
+	}
+	return cmd + "\n# " + desc, true
 }
 
 // refineToolUpdateEvents names tool results from tool_call_update with the

@@ -2108,6 +2108,63 @@ app_secret = "your-feishu-app-secret"
 # token = "your-telegram-bot-token"
 
 # =============================================================================
+# Project: DeepSeek Harness (dsh) / 使用 DeepSeek Harness
+# =============================================================================
+# dsh speaks ACP when started as `dsh --profile acp`. cc-connect ships a
+# first-class `type = "dsh"` agent. Set DEEPSEEK_API_KEY in the environment
+# (or in options.env). cc-connect forwards the key and never stores or logs it.
+# dsh 使用 `dsh --profile acp` 通过 ACP 通信。cc-connect 内置 `type = "dsh"`。
+# 请在环境变量或 options.env 中设置 DEEPSEEK_API_KEY。cc-connect 只转发密钥，
+# 不保存、不写入日志。
+#
+# Prerequisites / 前置条件:
+#   1. Install dsh and make sure `dsh` is on PATH.
+#      安装 dsh，并确保 `dsh` 在 PATH 中。
+#   2. Export DEEPSEEK_API_KEY. A custom endpoint is optional:
+#      DEEPSEEK_BASE_URL (or providers.base_url) is forwarded to dsh.
+#      导出 DEEPSEEK_API_KEY。自定义端点可选：DEEPSEEK_BASE_URL（或
+#      providers.base_url）会传给 dsh。
+
+# [[projects]]
+# name = "my-dsh-project"
+#
+# [projects.agent]
+# type = "dsh"
+#
+# [projects.agent.options]
+# work_dir = "/path/to/your/code"
+# model = "deepseek-flash"
+# # cmd = "/opt/homebrew/bin/dsh"          # optional absolute path / 可选绝对路径
+# # profile = "acp"                         # default; used only when args is unset
+# # reasoning_effort = "high"              # off|low|high|max; medium->high, xhigh->max
+# # mode = "default"                        # default | plan | yolo
+# #   default -> workspace-write, approval ask
+# #   plan    -> read-only, approval ask
+# #   yolo    -> danger-full-access, approval never
+# # DSH_PERMISSION_MODE seeds a fresh session. A resumed session keeps the
+# # permission facts in its log, so /mode appends permission/preset,
+# # sandbox/mode, and approval/policy when they differ, before session/resume.
+# # The change applies on the next message of the same conversation.
+# # If that update fails, start a new conversation with /new.
+# # DSH_PERMISSION_MODE 只初始化新会话。恢复的会话沿用日志里的权限事实，
+# # 因此 /mode 会在 session/resume 之前追加有变化的 permission/preset、
+# # sandbox/mode 和 approval/policy。下一条消息在同一会话中生效。
+# # 如果无法更新日志，请用 /new 开始新会话。
+# # dsh_home = ""                           # default ~/.dsh
+# #
+# # /compact is not available over ACP. dsh compacts the context on its own.
+# # ACP 没有 slash-command 通道，因此不提供 /compact。dsh 会自行压缩上下文。
+# #
+# # [projects.agent.options.env]
+# # DEEPSEEK_API_KEY = "set-me-outside-the-repo"
+
+# [[projects.platforms]]
+# type = "telegram"
+#
+# [projects.platforms.options]
+# token = "your-telegram-bot-token"
+
+# =============================================================================
 # Project: ACP (Agent Client Protocol) agent / 使用 ACP 子进程
 # =============================================================================
 # Runs any binary that speaks ACP over stdio (newline-delimited JSON-RPC 2.0).
@@ -2117,6 +2174,7 @@ app_secret = "your-feishu-app-secret"
 # set command + args to match each tool's documented ACP entrypoint.
 # 同一 type=acp：通过 command/args 指向各工具文档中的 ACP 启动方式即可。
 # For Devin specifically, prefer the dedicated `type = "devin"` section above.
+# For DeepSeek Harness, prefer the dedicated `type = "dsh"` section above.
 # 针对 Devin 建议直接使用上面的 type = "devin"；下面的 type = "acp" 主要给其他
 # 通用 ACP 工具使用。
 

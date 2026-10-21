@@ -14,6 +14,54 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
+func TestAppliesReasoningOnResume(t *testing.T) {
+	a, err := New(map[string]any{"command": "true"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.(*Agent).AppliesReasoningOnResume() {
+		t.Fatal("ACP reasoning effort should apply to the current conversation")
+	}
+}
+
+func TestSetLiveReasoningEffort_AppliesToRunningSession(t *testing.T) {
+	s, wResp, rReq := newTestSession(t, nil)
+	s.absorbConfigOptions([]acpConfigOption{{
+		ID: "reasoning_effort", Category: "thought_level", CurrentValue: "high",
+		Options: []acpConfigOptionChoice{{
+			Group: "effort",
+			Options: []acpConfigOptionChoice{
+				{Value: "off"}, {Value: "low"}, {Value: "high"}, {Value: "max"},
+			},
+		}},
+	}})
+	if s.SetLiveReasoningEffort("ultra") {
+		t.Fatal("unknown effort was accepted")
+	}
+	if got := s.GetReasoningEffort(); got != "high" {
+		t.Fatalf("effort after reject = %q, want high", got)
+	}
+	scriptACP(t, rReq, wResp, func(method string, params json.RawMessage) (string, string) {
+		if method != "session/set_config_option" {
+			return "", "unexpected " + method
+		}
+		var p struct {
+			ConfigID string `json:"configId"`
+			Value    string `json:"value"`
+		}
+		if json.Unmarshal(params, &p) != nil || p.ConfigID != "reasoning_effort" || p.Value != "low" {
+			return "", "bad params"
+		}
+		return `{"configOptions":[{"id":"reasoning_effort","category":"thought_level","currentValue":"low","options":[{"value":"off"},{"value":"low"},{"value":"high"},{"value":"max"}]}]}`, ""
+	})
+	if !s.SetLiveReasoningEffort("low") {
+		t.Fatal("live effort was not applied")
+	}
+	if got := s.GetReasoningEffort(); got != "low" {
+		t.Fatalf("session effort = %q, want low", got)
+	}
+}
+
 func TestReasoningEffortDisplayDoesNotRoundTrip(t *testing.T) {
 	a, err := New(map[string]any{"command": "true"})
 	if err != nil {

@@ -45,7 +45,27 @@ func sessionDeleteSupported(init *acpInitializeResult) bool {
 	if init == nil {
 		return false
 	}
-	raw := bytes.TrimSpace(init.AgentCapabilities.SessionCapabilities.Delete)
+	return sessionCapPresent(init.AgentCapabilities.SessionCapabilities.Delete)
+}
+
+func sessionResumeSupported(init *acpInitializeResult) bool {
+	if init == nil {
+		return false
+	}
+	return sessionCapPresent(init.AgentCapabilities.SessionCapabilities.Resume)
+}
+
+func sessionCloseSupported(init *acpInitializeResult) bool {
+	if init == nil {
+		return false
+	}
+	return sessionCapPresent(init.AgentCapabilities.SessionCapabilities.Close)
+}
+
+// sessionCapPresent is true when an ACP capability field was sent as a
+// JSON value other than null. Omitted fields unmarshal to nil.
+func sessionCapPresent(raw json.RawMessage) bool {
+	raw = bytes.TrimSpace(raw)
 	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 

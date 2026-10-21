@@ -18,6 +18,50 @@ func (s *suppressTestPlatform) Send(context.Context, any, string) error  { retur
 func (s *suppressTestPlatform) Stop() error                              { return nil }
 func (s *suppressTestPlatform) ProgressStyle() string                    { return s.style }
 
+type displayNameAgent struct {
+	stubAgent
+	label string
+}
+
+func (a *displayNameAgent) Name() string           { return "dsh" }
+func (a *displayNameAgent) CLIBinaryName() string  { return "dsh" }
+func (a *displayNameAgent) CLIDisplayName() string { return a.label }
+
+func TestUserVisibleAgentName_UsesDisplayName(t *testing.T) {
+	got := userVisibleAgentName(&displayNameAgent{label: "DeepSeek Harness"})
+	if got != "DeepSeek Harness" {
+		t.Fatalf("label = %q", got)
+	}
+	if got := normalizeProgressAgentLabel("dsh"); got != "Dsh" {
+		t.Fatalf("type name label = %q, want Dsh", got)
+	}
+	if got := normalizeProgressAgentLabel("DeepSeek Harness"); got != "DeepSeek Harness" {
+		t.Fatalf("display label = %q", got)
+	}
+	if got := userVisibleAgentName(&stubAgent{}); got != "Stub" {
+		t.Fatalf("fallback = %q, want Stub", got)
+	}
+}
+
+func TestCompactProgressWriter_KeepsDisplayName(t *testing.T) {
+	p := &previewCapturePlatform{}
+	replyCtx := progressHintReplyCtx{style: progressStyleCard, payload: true}
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, userVisibleAgentName(&displayNameAgent{label: "DeepSeek Harness"}), LangChinese, nil)
+	if !w.AppendEvent(ProgressEntryInfo, "done", "", "done") {
+		t.Fatal("append failed")
+	}
+	if !w.Finalize(ProgressCardStateCompleted) {
+		t.Fatal("finalize failed")
+	}
+	parsed, ok := ParseProgressCardPayload(p.updated[len(p.updated)-1])
+	if !ok {
+		t.Fatal("payload did not parse")
+	}
+	if parsed.Agent != "DeepSeek Harness" {
+		t.Fatalf("agent = %q", parsed.Agent)
+	}
+}
+
 func TestSuppressStandaloneToolResultEvent(t *testing.T) {
 	if SuppressStandaloneToolResultEvent(&stubPlatformNoProgress{}) {
 		t.Fatal("platform without ProgressStyleProvider should not suppress")
