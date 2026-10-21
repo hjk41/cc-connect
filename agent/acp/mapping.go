@@ -219,7 +219,9 @@ func extractToolCallContentText(blocks []struct {
 // that still carry human-readable text). Never guesses auth or tool semantics.
 func mapSessionUpdateFallback(sessionID string, kind string, update json.RawMessage) []core.Event {
 	// Some agents may send reasoning as a dedicated discriminator; map to EventThinking.
-	switch strings.ToLower(kind) {
+	// Chunk kinds are token-sized deltas. reasoning/thinking are whole blocks.
+	lk := strings.ToLower(kind)
+	switch lk {
 	case "reasoning", "reasoning_chunk", "thinking", "agent_thinking_chunk", "agent_thought_chunk":
 		var u struct {
 			Content struct {
@@ -238,10 +240,12 @@ func mapSessionUpdateFallback(sessionID string, kind string, update json.RawMess
 		if t == "" {
 			return nil
 		}
+		delta := lk == "reasoning_chunk" || lk == "agent_thinking_chunk" || lk == "agent_thought_chunk"
 		return []core.Event{{
 			Type:      core.EventThinking,
 			Content:   t,
 			SessionID: sessionID,
+			Delta:     delta,
 		}}
 	case "message", "message_chunk", "text", "response":
 		// Common vendor extensions for text output

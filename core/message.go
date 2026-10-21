@@ -475,20 +475,24 @@ type UserQuestionOption struct {
 
 // Event represents a single piece of agent output streamed back to the engine.
 type Event struct {
-	Type                     EventType
-	Content                  string
-	ToolName                 string         // populated for EventToolUse, EventPermissionRequest
-	ToolInput                string         // human-readable summary of tool input
-	ToolInputRaw             map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
-	ToolResult               string         // populated for EventToolResult
-	ToolStatus               string         // optional status for EventToolResult (e.g. completed/failed)
-	ToolExitCode             *int           // optional exit code for EventToolResult
-	ToolSuccess              *bool          // optional success flag for EventToolResult
-	SessionID                string         // agent-managed session ID for conversation continuity
-	RequestID                string         // unique request ID for EventPermissionRequest
-	Questions                []UserQuestion // populated when ToolName == "AskUserQuestion"
-	Done                     bool
-	Error                    error
+	Type         EventType
+	Content      string
+	ToolName     string         // populated for EventToolUse, EventPermissionRequest
+	ToolInput    string         // human-readable summary of tool input
+	ToolInputRaw map[string]any // raw tool input (for EventPermissionRequest, used in allow response)
+	ToolResult   string         // populated for EventToolResult
+	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
+	ToolExitCode *int           // optional exit code for EventToolResult
+	ToolSuccess  *bool          // optional success flag for EventToolResult
+	SessionID    string         // agent-managed session ID for conversation continuity
+	RequestID    string         // unique request ID for EventPermissionRequest
+	Questions    []UserQuestion // populated when ToolName == "AskUserQuestion"
+	Done         bool
+	Error        error
+	// Delta, for EventThinking, means Content is an incremental fragment of one
+	// streaming thinking block. Consecutive Delta thinking events are concatenated
+	// verbatim (no separator). Agents that emit whole blocks leave it false.
+	Delta                    bool
 	InputTokens              int // token usage from agent result events
 	OutputTokens             int
 	CacheCreationInputTokens int            // cache-write tokens (new content written to cache)

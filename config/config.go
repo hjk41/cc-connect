@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -193,16 +194,19 @@ const (
 
 // DisplayConfig controls how intermediate messages (thinking, tool output) are shown.
 type DisplayConfig struct {
-	Mode                 *string `toml:"mode"`                   // "full" (default), "compact", or "quiet"
-	CardMode             *string `toml:"card_mode"`              // "legacy" (default) or "rich" (Card 2.0 Feishu)
-	ThinkingMessages     *bool   `toml:"thinking_messages"`      // whether thinking messages are shown; default true
-	ThinkingMaxLen       *int    `toml:"thinking_max_len"`       // max chars for thinking messages; 0 = no truncation; default 300
-	ToolMaxLen           *int    `toml:"tool_max_len"`           // max chars for tool use messages; 0 = no truncation; default 500
-	ToolMessages         *bool   `toml:"tool_messages"`          // whether tool progress messages are shown; default true
-	HistoryMaxLen        *int    `toml:"history_max_len"`        // max chars per /history entry; 0 = no truncation; default 1000
-	ShowContextIndicator *bool   `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
-	ReplyFooter          *bool   `toml:"reply_footer"`           // whether Codex-like footer is shown; default true
-	HideAgentFooter      *bool   `toml:"hide_agent_footer"`      // strip agent-emitted model/token footer lines; default false
+	Mode             *string `toml:"mode"`              // "full" (default), "compact", or "quiet"
+	CardMode         *string `toml:"card_mode"`         // "legacy" (default) or "rich" (Card 2.0 Feishu)
+	ThinkingMessages *bool   `toml:"thinking_messages"` // whether thinking messages are shown; default true
+	ThinkingMaxLen   *int    `toml:"thinking_max_len"`  // max chars for thinking messages; 0 = no truncation; default 300
+	// ProgressUpdateIntervalMs is the minimum gap between progress-card edits.
+	// Default 1000. 0 disables the core throttle; a platform's own limit still applies when longer.
+	ProgressUpdateIntervalMs *int  `toml:"progress_update_interval_ms"`
+	ToolMaxLen               *int  `toml:"tool_max_len"`           // max chars for tool use messages; 0 = no truncation; default 500
+	ToolMessages             *bool `toml:"tool_messages"`          // whether tool progress messages are shown; default true
+	HistoryMaxLen            *int  `toml:"history_max_len"`        // max chars per /history entry; 0 = no truncation; default 1000
+	ShowContextIndicator     *bool `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
+	ReplyFooter              *bool `toml:"reply_footer"`           // whether Codex-like footer is shown; default true
+	HideAgentFooter          *bool `toml:"hide_agent_footer"`      // strip agent-emitted model/token footer lines; default false
 }
 
 // StreamPreviewConfig controls real-time streaming preview in IM.
@@ -992,6 +996,24 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 	)
 
 	return
+}
+
+// EffectiveProgressUpdateInterval is the minimum gap between progress-card edits.
+// Resolution: project [display] > global [display] > 1s. Zero disables the core
+// throttle; a platform ProgressUpdateThrottler still applies when it is longer.
+// Negative values fall back to the default.
+func EffectiveProgressUpdateInterval(cfg *Config, proj *ProjectConfig) time.Duration {
+	ms := 1000
+	if cfg != nil && cfg.Display.ProgressUpdateIntervalMs != nil {
+		ms = *cfg.Display.ProgressUpdateIntervalMs
+	}
+	if proj != nil && proj.Display != nil && proj.Display.ProgressUpdateIntervalMs != nil {
+		ms = *proj.Display.ProgressUpdateIntervalMs
+	}
+	if ms < 0 {
+		ms = 1000
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 // EffectiveHistoryMaxLen returns the per-entry /history truncation length.
@@ -3867,6 +3889,11 @@ func GetGlobalSettings() map[string]any {
 		result["thinking_max_len"] = *cfg.Display.ThinkingMaxLen
 	} else {
 		result["thinking_max_len"] = 300
+	}
+	if cfg.Display.ProgressUpdateIntervalMs != nil {
+		result["progress_update_interval_ms"] = *cfg.Display.ProgressUpdateIntervalMs
+	} else {
+		result["progress_update_interval_ms"] = 1000
 	}
 	if cfg.Display.ToolMessages != nil {
 		result["tool_messages"] = *cfg.Display.ToolMessages

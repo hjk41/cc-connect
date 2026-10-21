@@ -2621,3 +2621,170 @@ func TestCUJ_H5_WorkspaceSkillDiscoveryAndInvocation(t *testing.T) {
 	sent := p.getSent()
 	assertWorkspaceSkills(t, sent[len(sent)-1], "b", "a")
 }
+
+// flakyCardCUJPlatform serves a progress card whose edits fail for one turn.
+type flakyCardCUJPlatform struct {
+	stubPlatformEngine
+	mu          sync.Mutex
+	failUpdates bool
+	starts      []string
+	updateErrs  int
+	updateOK    int
+}
+
+func (p *flakyCardCUJPlatform) ProgressStyle() string { return progressStyleCard }
+
+func (p *flakyCardCUJPlatform) SupportsProgressCardPayload() bool { return true }
+
+func (p *flakyCardCUJPlatform) SendPreviewStart(_ context.Context, _ any, content string) (any, error) {
+	p.mu.Lock()
+	p.starts = append(p.starts, content)
+	p.mu.Unlock()
+	return "card-handle", nil
+}
+
+func (p *flakyCardCUJPlatform) UpdateMessage(_ context.Context, _ any, content string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.failUpdates {
+		p.updateErrs++
+		return errors.New("transient card update")
+	}
+	p.updateOK++
+	p.starts = append(p.starts, content)
+	return nil
+}
+
+func (p *flakyCardCUJPlatform) snapshot() (starts []string, errs, ok int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	starts = append([]string(nil), p.starts...)
+	return starts, p.updateErrs, p.updateOK
+}
+
+// CUJ: a turn full of thinking deltas and tool calls must not flood the chat
+// when card updates fail, and the next turn still delivers a normal answer.
+func TestCUJ_ProgressCardFailureStaysBounded(t *testing.T) {
+	p := &flakyCardCUJPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}, failUpdates: true}
+	agent := &cujAgent{}
+	e := NewEngine("test", agent, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
+	e.display.ProgressUpdateInterval = 0
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine, agent: agent}
+
+	var first []Event
+	for _, part := range []string{"aa", "bb", "cc", "dd", "ee", "ff", "gg", "hh"} {
+		first = append(first, Event{Type: EventThinking, Content: part, Delta: true, SessionID: "cuj"})
+	}
+	first = append(first,
+		Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"},
+		Event{Type: EventToolResult, ToolName: "Bash", ToolResult: "ok"},
+		Event{Type: EventResult, Content: "final answer", Done: true},
+	)
+	agent.mu.Lock()
+	agent.nextSessionEvents = first
+	agent.mu.Unlock()
+
+	// User action 1: a turn that streams many thinking fragments and calls a tool.
+	env.engine.ReceiveMessage(p, &Message{
+		SessionKey: "test:ada",
+		Platform:   "test",
+		MessageID:  "m1",
+		UserID:     "ada",
+		UserName:   "ada",
+		Content:    "investigate the failure",
+		ReplyCtx:   "ctx-ada",
+	})
+	env.waitFor("final answer", 5*time.Second, func() bool { return env.sentContains("final answer") })
+
+	sent := p.getSent()
+	if len(sent) > 5 {
+		t.Fatalf("failed card updates flooded the chat with %d messages: %#v", len(sent), sent)
+	}
+	fragments := 0
+	for _, msg := range sent {
+		if msg == "💭 aa" || msg == "💭 bb" || strings.Count(msg, "💭") > 1 {
+			fragments++
+		}
+	}
+	if fragments > 0 {
+		t.Fatalf("thinking fragments leaked into chat: %#v", sent)
+	}
+	starts, updateErrs, _ := p.snapshot()
+	if updateErrs == 0 {
+		t.Fatal("card updates never failed")
+	}
+	coalesced := false
+	for _, raw := range starts {
+		payload, ok := ParseProgressCardPayload(raw)
+		if !ok {
+			continue
+		}
+		for _, item := range payload.Items {
+			if item.Kind == ProgressEntryThinking && item.Text == "aabbccddeeffgghh" {
+				coalesced = true
+			}
+			if item.Kind == ProgressEntryThinking && item.Text != "aabbccddeeffgghh" && len(item.Text) < 8 {
+				t.Fatalf("progress card kept a thinking fragment %q", item.Text)
+			}
+		}
+	}
+	if !coalesced {
+		t.Fatalf("progress card did not show one coalesced thinking block; starts=%v", starts)
+	}
+
+	// User action 2: a local command between turns.
+	beforeStatus := len(p.getSent())
+	env.engine.ReceiveMessage(p, &Message{
+		SessionKey: "test:ada",
+		Platform:   "test",
+		MessageID:  "m2",
+		UserID:     "ada",
+		UserName:   "ada",
+		Content:    "/status",
+		ReplyCtx:   "ctx-ada",
+	})
+	env.waitFor("status reply", 5*time.Second, func() bool { return len(p.getSent()) > beforeStatus })
+
+	// User action 3: the next turn updates the card normally and delivers its answer.
+	p.mu.Lock()
+	p.failUpdates = false
+	p.mu.Unlock()
+	session := e.sessions.GetOrCreateActive("test:ada")
+	env.waitFor("turn lock released", 5*time.Second, func() bool {
+		gen, ok := session.TryLock()
+		if !ok {
+			return false
+		}
+		session.Unlock(gen)
+		return true
+	})
+	agent.mu.Lock()
+	if len(agent.sessions) == 0 {
+		agent.mu.Unlock()
+		t.Fatal("first turn did not start a session")
+	}
+	sess := agent.sessions[0]
+	agent.mu.Unlock()
+	sess.mu.Lock()
+	sess.pendingEvents = []Event{
+		{Type: EventThinking, Content: "planning the follow up"},
+		{Type: EventResult, Content: "second answer", Done: true},
+	}
+	sess.mu.Unlock()
+	env.engine.ReceiveMessage(p, &Message{
+		SessionKey: "test:ada",
+		Platform:   "test",
+		MessageID:  "m3",
+		UserID:     "ada",
+		UserName:   "ada",
+		Content:    "follow up",
+		ReplyCtx:   "ctx-ada",
+	})
+	env.waitFor("second answer", 5*time.Second, func() bool { return env.sentContains("second answer") })
+	if _, _, updateOK := p.snapshot(); updateOK == 0 {
+		t.Fatal("following turn did not update the progress card")
+	}
+	if got := len(p.getSent()); got > 8 {
+		t.Fatalf("following turn grew the chat to %d messages: %#v", got, p.getSent())
+	}
+}

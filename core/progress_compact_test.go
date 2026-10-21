@@ -2,7 +2,10 @@ package core
 
 import (
 	"context"
+	"errors"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -46,7 +49,7 @@ func TestUserVisibleAgentName_UsesDisplayName(t *testing.T) {
 func TestCompactProgressWriter_KeepsDisplayName(t *testing.T) {
 	p := &previewCapturePlatform{}
 	replyCtx := progressHintReplyCtx{style: progressStyleCard, payload: true}
-	w := newCompactProgressWriter(context.Background(), p, replyCtx, userVisibleAgentName(&displayNameAgent{label: "DeepSeek Harness"}), LangChinese, nil)
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, userVisibleAgentName(&displayNameAgent{label: "DeepSeek Harness"}), LangChinese, nil, 0, "")
 	if !w.AppendEvent(ProgressEntryInfo, "done", "", "done") {
 		t.Fatal("append failed")
 	}
@@ -153,7 +156,7 @@ func TestCompactProgressWriter_UsesReplyContextHints(t *testing.T) {
 		payload: true,
 	}
 
-	w := newCompactProgressWriter(context.Background(), p, replyCtx, "codex", LangEnglish, nil)
+	w := newCompactProgressWriter(context.Background(), p, replyCtx, "codex", LangEnglish, nil, 0, "")
 	if !w.enabled {
 		t.Fatal("progress writer should be enabled")
 	}
@@ -243,7 +246,7 @@ func TestCompactProgressWriter_AppliesTransformToCardPayloadEntries(t *testing.T
 	}
 	w := newCompactProgressWriter(context.Background(), p, "ctx", "codex", LangEnglish, func(s string) string {
 		return strings.ReplaceAll(s, "/root/code/demo/src/app.ts:42", "📄 `src/app.ts:42`")
-	})
+	}, 0, "")
 
 	if ok := w.AppendStructured(ProgressCardEntry{
 		Kind: ProgressEntryThinking,
@@ -284,9 +287,12 @@ func TestCompactProgressWriter_ThrottlesRapidUpdates(t *testing.T) {
 			style:              "card",
 			supportPayload:     true,
 		},
-		throttle: 50 * time.Millisecond,
+		throttle: time.Second,
 	}
-	w := newCompactProgressWriter(context.Background(), p, "ctx", "cc", LangEnglish, nil)
+	w := newCompactProgressWriter(context.Background(), p, "ctx", "cc", LangEnglish, nil, 0, "")
+	clock := &manualProgressClock{now: time.Unix(1_700_000_000, 0)}
+	w.now = func() time.Time { return clock.now }
+	w.afterFunc = clock.after
 
 	w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "step 1"}, "step 1")
 	if len(p.getPreviewStarts()) != 1 {
@@ -295,16 +301,28 @@ func TestCompactProgressWriter_ThrottlesRapidUpdates(t *testing.T) {
 
 	w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "pwd"}, "pwd")
 	w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryToolResult, Tool: "Bash", Text: "ok"}, "ok")
-	editsBeforeThrottle := len(p.getPreviewEdits())
-	if editsBeforeThrottle > 0 {
-		t.Fatalf("rapid updates within throttle window should be skipped, got %d edits", editsBeforeThrottle)
+	if edits := len(p.getPreviewEdits()); edits != 0 {
+		t.Fatalf("rapid updates within throttle window should be skipped, got %d edits", edits)
+	}
+	if clock.pending == nil {
+		t.Fatal("throttled edit should schedule a trailing update")
 	}
 
-	time.Sleep(60 * time.Millisecond)
+	// The trailing timer sends the latest snapshot without another event.
+	clock.fire()
+	edits := p.getPreviewEdits()
+	if len(edits) != 1 {
+		t.Fatalf("trailing update edits = %d, want 1", len(edits))
+	}
+	payload, parsed := ParseProgressCardPayload(edits[0])
+	if !parsed || len(payload.Items) != 3 {
+		t.Fatalf("trailing snapshot = %#v", payload)
+	}
+
+	clock.now = clock.now.Add(time.Second)
 	w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "step 4"}, "step 4")
-	editsAfterWait := len(p.getPreviewEdits())
-	if editsAfterWait != 1 {
-		t.Fatalf("update after throttle interval should go through, got %d edits", editsAfterWait)
+	if len(p.getPreviewEdits()) != 2 {
+		t.Fatalf("update after throttle interval should go through, got %d edits", len(p.getPreviewEdits()))
 	}
 
 	ok := w.Finalize(ProgressCardStateCompleted)
@@ -313,7 +331,7 @@ func TestCompactProgressWriter_ThrottlesRapidUpdates(t *testing.T) {
 	}
 	finalEdits := p.getPreviewEdits()
 	last := finalEdits[len(finalEdits)-1]
-	payload, parsed := ParseProgressCardPayload(last)
+	payload, parsed = ParseProgressCardPayload(last)
 	if !parsed {
 		t.Fatalf("final edit should be a valid payload, got %q", last)
 	}
@@ -333,7 +351,7 @@ func TestCompactProgressWriter_DoesNotTransformToolResults(t *testing.T) {
 	}
 	w := newCompactProgressWriter(context.Background(), p, "ctx", "codex", LangEnglish, func(s string) string {
 		return strings.ReplaceAll(s, "/root/code/demo/src/app.ts:42", "📄 `src/app.ts:42`")
-	})
+	}, 0, "")
 
 	raw := "/root/code/demo/src/app.ts:42"
 	if ok := w.AppendStructured(ProgressCardEntry{
@@ -353,5 +371,289 @@ func TestCompactProgressWriter_DoesNotTransformToolResults(t *testing.T) {
 	}
 	if got := payload.Items[0].Text; got != raw {
 		t.Fatalf("tool result text = %q, want raw %q", got, raw)
+	}
+}
+
+type manualProgressClock struct {
+	mu      sync.Mutex
+	now     time.Time
+	pending func()
+	delay   time.Duration
+}
+
+func (c *manualProgressClock) after(d time.Duration, f func()) func() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pending = f
+	c.delay = d
+	return func() bool {
+		c.mu.Lock()
+		c.pending = nil
+		c.mu.Unlock()
+		return true
+	}
+}
+
+func (c *manualProgressClock) fire() {
+	c.mu.Lock()
+	fn := c.pending
+	c.pending = nil
+	c.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
+}
+
+type scriptedProgressPlatform struct {
+	stubCompactProgressPlatform
+	failUpdates int // >0 remaining failures; <0 always fail
+	failCreates int
+	sendErr     error
+}
+
+func (p *scriptedProgressPlatform) UpdateMessage(ctx context.Context, handle any, content string) error {
+	if p.failUpdates < 0 || p.failUpdates > 0 {
+		if p.failUpdates > 0 {
+			p.failUpdates--
+		}
+		return errors.New("transient update")
+	}
+	return p.stubCompactProgressPlatform.UpdateMessage(ctx, handle, content)
+}
+
+func (p *scriptedProgressPlatform) SendPreviewStart(ctx context.Context, replyCtx any, content string) (any, error) {
+	if p.failCreates < 0 || p.failCreates > 0 {
+		if p.failCreates > 0 {
+			p.failCreates--
+		}
+		return nil, errors.New("create failed")
+	}
+	return p.stubCompactProgressPlatform.SendPreviewStart(ctx, replyCtx, content)
+}
+
+func (p *scriptedProgressPlatform) Send(ctx context.Context, replyCtx any, content string) error {
+	if err := p.stubCompactProgressPlatform.Send(ctx, replyCtx, content); err != nil {
+		return err
+	}
+	return p.sendErr
+}
+
+func newScriptedProgress(failUpdates, failCreates int) (*scriptedProgressPlatform, *compactProgressWriter, *manualProgressClock) {
+	p := &scriptedProgressPlatform{
+		stubCompactProgressPlatform: stubCompactProgressPlatform{
+			stubPlatformEngine: stubPlatformEngine{n: "card"},
+			style:              "card",
+			supportPayload:     true,
+		},
+		failUpdates: failUpdates,
+		failCreates: failCreates,
+	}
+	w := newCompactProgressWriter(context.Background(), p, "ctx", "agent", LangEnglish, nil, 0, "Progress (live card unavailable)")
+	clock := &manualProgressClock{now: time.Unix(1_700_000_000, 0)}
+	w.now = func() time.Time { return clock.now }
+	w.afterFunc = clock.after
+	return p, w, clock
+}
+
+func TestProgressWriter_TransientUpdateFailureDoesNotFallBack(t *testing.T) {
+	p, w, clock := newScriptedProgress(1, 0)
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "one"}, "one") {
+		t.Fatal("first append should be handled")
+	}
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "two"}, "two") {
+		t.Fatal("update failure must not fall back to per-event send")
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("transient update failure sent chat messages: %#v", sent)
+	}
+	if starts := p.getPreviewStarts(); len(starts) != 1 {
+		t.Fatalf("starts = %d, want 1", len(starts))
+	}
+	if edits := p.getPreviewEdits(); len(edits) != 0 {
+		t.Fatalf("failed update should not record an edit, got %d", len(edits))
+	}
+	clock.fire()
+	edits := p.getPreviewEdits()
+	if len(edits) != 1 {
+		t.Fatalf("retry edits = %d, want 1", len(edits))
+	}
+	payload, ok := ParseProgressCardPayload(edits[0])
+	if !ok || len(payload.Items) != 2 || payload.Items[0].Text != "one" || payload.Items[1].Text != "two" {
+		t.Fatalf("retry payload = %#v", payload)
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("retry should edit the card, not send, got %#v", sent)
+	}
+}
+
+func TestProgressWriter_RolloverAfterThreeUpdateFailures(t *testing.T) {
+	p, w, clock := newScriptedProgress(-1, 0)
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "seed"}, "seed") {
+		t.Fatal("create failed")
+	}
+	// Two append+retry pairs reach the third UpdateMessage failure and roll over.
+	for i := 0; i < 2; i++ {
+		text := "u" + strconv.Itoa(i)
+		if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: text}, text) {
+			t.Fatalf("append %d returned false", i)
+		}
+		clock.fire()
+	}
+	starts := p.getPreviewStarts()
+	if len(starts) != 2 {
+		t.Fatalf("starts after first rollover = %d, want 2 (original + rollover)", len(starts))
+	}
+	payload, ok := ParseProgressCardPayload(starts[1])
+	if !ok {
+		t.Fatalf("rollover payload did not parse: %q", starts[1])
+	}
+	joined := ""
+	for _, item := range payload.Items {
+		joined += item.Text + "|"
+	}
+	if !strings.Contains(joined, "seed") || !strings.Contains(joined, "u1") {
+		t.Fatalf("rollover snapshot = %q, want the full current entries", joined)
+	}
+
+	for i := 0; i < 2; i++ {
+		text := "v" + strconv.Itoa(i)
+		if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: text}, text) {
+			t.Fatal("append returned false")
+		}
+		clock.fire()
+	}
+	if starts = p.getPreviewStarts(); len(starts) != 3 {
+		t.Fatalf("starts after second rollover = %d, want 3", len(starts))
+	}
+
+	for i := 0; i < 2; i++ {
+		text := "w" + strconv.Itoa(i)
+		if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: text}, text) {
+			t.Fatal("append returned false")
+		}
+		clock.fire()
+	}
+	if starts = p.getPreviewStarts(); len(starts) != 3 {
+		t.Fatalf("rollovers exceeded 2, starts = %d", len(starts))
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[0], "Progress (live card unavailable)") {
+		t.Fatalf("exhausted rollovers should digest, sent = %#v", sent)
+	}
+}
+
+func TestProgressWriter_DigestCoalescesAndFlushesOnFinalize(t *testing.T) {
+	p, w, clock := newScriptedProgress(0, -1)
+	const n = 6
+	for i := 0; i < n; i++ {
+		text := "e" + strconv.Itoa(i)
+		if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: text}, text) {
+			t.Fatalf("append %d returned false", i)
+		}
+		if i == 0 {
+			clock.fire() // second create failure switches to digest; do not flush it
+		}
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("digest should wait for the flush threshold or Finalize, sent %#v", sent)
+	}
+	if !w.Finalize(ProgressCardStateCompleted) {
+		t.Fatal("finalize should flush the digest")
+	}
+	if !w.Finalize(ProgressCardStateCompleted) {
+		t.Fatal("second finalize must be safe")
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || len(sent) >= n {
+		t.Fatalf("digest sends = %d, want a bounded count below %d: %#v", len(sent), n, sent)
+	}
+	for _, msg := range sent {
+		if !strings.HasPrefix(msg, "Progress (live card unavailable)\n") {
+			t.Fatalf("digest missing header: %q", msg)
+		}
+	}
+	body := strings.Join(sent, "\n")
+	for i := 0; i < n; i++ {
+		if !strings.Contains(body, "e"+strconv.Itoa(i)) {
+			t.Fatalf("digest dropped e%d: %q", i, body)
+		}
+	}
+}
+
+func TestProgressWriter_DigestFlushesWhenBufferIsLarge(t *testing.T) {
+	p, w, clock := newScriptedProgress(0, -1)
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "small"}, "small") {
+		t.Fatal("append returned false")
+	}
+	clock.fire() // second create failure enters digest
+	big := strings.Repeat("字", 3000)
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: big}, big) {
+		t.Fatal("large append returned false")
+	}
+	sent := p.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("large digest sends = %d, want 1", len(sent))
+	}
+	if !strings.Contains(sent[0], "Progress (live card unavailable)") || !strings.Contains(sent[0], "字") {
+		t.Fatalf("large digest = %q", sent[0][:min(80, len(sent[0]))])
+	}
+}
+
+func TestProgressWriter_DigestSendFailureDropsBatch(t *testing.T) {
+	p, w, clock := newScriptedProgress(0, -1)
+	p.sendErr = errors.New("send down")
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryInfo, Text: "batch"}, "batch") {
+		t.Fatal("append returned false")
+	}
+	clock.fire()
+	if !w.Finalize(ProgressCardStateFailed) {
+		t.Fatal("finalize should still return true in digest mode")
+	}
+	if got := len(p.getSent()); got != 1 {
+		t.Fatalf("failed digest sends = %d, want 1 dropped attempt", got)
+	}
+	if !w.Finalize(ProgressCardStateFailed) {
+		t.Fatal("second finalize")
+	}
+	if got := len(p.getSent()); got != 1 {
+		t.Fatalf("second finalize retried the digest, sends = %d", got)
+	}
+}
+
+func TestProgressWriter_ContextCanceledSendsNothing(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p := &scriptedProgressPlatform{
+		stubCompactProgressPlatform: stubCompactProgressPlatform{
+			stubPlatformEngine: stubPlatformEngine{n: "card"},
+			style:              "card",
+			supportPayload:     true,
+		},
+	}
+	w := newCompactProgressWriter(ctx, p, "ctx", "agent", LangEnglish, nil, 0, "Progress (live card unavailable)")
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "late"}, "late") {
+		t.Fatal("canceled writer should not ask the engine to fall back")
+	}
+	if !w.Finalize(ProgressCardStateFailed) {
+		t.Fatal("finalize during shutdown should stop quietly")
+	}
+	if starts, sent := p.getPreviewStarts(), p.getSent(); len(starts) != 0 || len(sent) != 0 {
+		t.Fatalf("canceled writer sent starts=%d sent=%d", len(starts), len(sent))
+	}
+}
+
+func TestProgressEditIntervalUsesTheLargerGap(t *testing.T) {
+	platform := &stubThrottledProgressPlatform{throttle: 2 * time.Second}
+	if got := progressEditInterval(time.Second, platform); got != 2*time.Second {
+		t.Fatalf("platform longer gap = %s", got)
+	}
+	if got := progressEditInterval(5*time.Second, platform); got != 5*time.Second {
+		t.Fatalf("core longer gap = %s", got)
+	}
+	if got := progressEditInterval(0, platform); got != 2*time.Second {
+		t.Fatalf("core disabled = %s, want platform gap", got)
+	}
+	if got := progressEditInterval(0, &stubPlatformEngine{n: "plain"}); got != 0 {
+		t.Fatalf("no throttler = %s, want 0", got)
 	}
 }
