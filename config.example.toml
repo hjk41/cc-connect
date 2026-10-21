@@ -135,6 +135,9 @@ level = "info" # debug, info, warn, error
 #                           #        隐藏思考和工具消息，所有文本合并到同一张卡片，完成后发送 done emoji
 # thinking_messages = true  # Show/hide thinking messages (default: true) / 是否显示思考消息（默认 true）
 # thinking_max_len = 300    # Max chars for thinking messages (default: 300) / 思考消息最大字符数（默认 300）
+# progress_update_interval_ms = 1000  # Min ms between progress-card edits (default: 1000; 0 = no core throttle).
+#                           # A platform limit still applies when it is longer. Per-project [projects.display] overrides this.
+#                           # 进度卡片两次编辑的最小间隔毫秒数（默认 1000；0 表示不做核心层节流）。平台自身更长的限制仍然生效。
 # tool_max_len = 500        # Max chars for tool use messages (default: 500) / 工具调用消息最大字符数（默认 500）
 # history_max_len = 1000    # Max chars per /history entry (default: 1000; 0 = no truncation) / 每条历史记录最大字符数（默认 1000；0 表示不截断）
 # tool_messages = true      # Show/hide tool progress messages (default: true) / 是否显示工具进度消息（默认 true）

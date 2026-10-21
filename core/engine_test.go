@@ -1855,6 +1855,8 @@ func TestProcessInteractiveEvents_CardProgressUsesStructuredPayloadWhenSupported
 		supportPayload:     true,
 	}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	// This test checks the running edit and the completed edit separately.
+	e.display.ProgressUpdateInterval = 0
 	sessionKey := "feishu:user3"
 	session := e.sessions.GetOrCreateActive(sessionKey)
 	agentSession := newControllableSession("s3")

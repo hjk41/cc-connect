@@ -334,10 +334,14 @@ type DisplayCfg struct {
 	CardMode         string // "legacy" (default) or "rich" (Card 2.0 Feishu)
 	ThinkingMessages bool
 	ThinkingMaxLen   int // max runes for thinking preview; 0 = no truncation
-	ToolMaxLen       int // max runes for tool use preview; 0 = no truncation
-	ToolMessages     bool
-	HistoryMaxLen    *int // max runes for /history entries; nil = default, 0 = no truncation
-	HideAgentFooter  bool // strip model/token footer lines emitted as agent text
+	// ProgressUpdateInterval is the minimum gap between progress-card edits.
+	// 0 disables the core throttle; a platform ProgressUpdateThrottler still
+	// applies when it asks for a longer gap.
+	ProgressUpdateInterval time.Duration
+	ToolMaxLen             int // max runes for tool use preview; 0 = no truncation
+	ToolMessages           bool
+	HistoryMaxLen          *int // max runes for /history entries; nil = default, 0 = no truncation
+	HideAgentFooter        bool // strip model/token footer lines emitted as agent text
 }
 
 // InstantReplyCfg controls the immediate confirmation reply sent when a message
@@ -365,6 +369,7 @@ type Engine struct {
 	speech                SpeechCfg
 	tts                   *TTSCfg
 	display               DisplayCfg
+	nowFunc               func() time.Time // tests override the clock used to coalesce thinking deltas
 	injectSender          bool
 	attachmentSendEnabled bool
 	startedAt             time.Time
@@ -777,7 +782,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		cancel:                cancel,
 		i18n:                  NewI18n(lang),
 		attachmentSendEnabled: true,
-		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
+		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy", ProgressUpdateInterval: time.Second},
 		commands:              NewCommandRegistry(),
 		skills:                NewSkillRegistry(),
 		aliases:               make(map[string]string),
@@ -922,6 +927,10 @@ func (e *Engine) SetTTSSaveFunc(fn func(mode string) error) {
 // SetDisplayConfig overrides the default truncation settings.
 func (e *Engine) SetDisplayConfig(cfg DisplayCfg) {
 	e.display = cfg
+}
+
+func (e *Engine) newTurnProgressWriter(p Platform, replyCtx any, transform func(string) string) *compactProgressWriter {
+	return newCompactProgressWriter(e.ctx, p, replyCtx, userVisibleAgentName(e.agent), e.i18n.CurrentLang(), transform, e.display.ProgressUpdateInterval, e.i18n.T(MsgProgressLiveCardUnavailable))
 }
 
 // SetInstantReply configures the immediate confirmation reply.
@@ -5253,7 +5262,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		}
 	}
 	sp := newStreamPreview(e.streamPreview, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
-	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, userVisibleAgentName(e.agent), e.i18n.CurrentLang(), workspaceRenderer)
+	cp := e.newTurnProgressWriter(state.platform, state.replyCtx, workspaceRenderer)
 	state.mu.Unlock()
 
 	// Send instant confirmation reply if enabled and no streaming card is active.
@@ -5287,107 +5296,119 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 	events := state.agentSession.Events()
 	stopCh := state.stopSignal()
+	var injected []Event
+	think := newThinkingCoalescer(e.nowFunc)
 	for {
 		var event Event
 		var ok bool
-
-		select {
-		case <-stopCh:
-			sp.discard()
-			return
-		case event, ok = <-events:
-			if !ok {
-				goto channelClosed
-			}
-		case err := <-pendingSend:
-			pendingSend = nil
-			if err != nil {
-				slog.Error("failed to send prompt", "error", err, "session_key", sessionKey)
+		fromInjected := false
+		if len(injected) > 0 {
+			event = injected[0]
+			injected = injected[1:]
+			ok = true
+			fromInjected = true
+		} else {
+			select {
+			case <-stopCh:
 				sp.discard()
-				if stopTyping != nil {
-					stopTyping()
-					stopTyping = nil
+				cp.Finalize(ProgressCardStateFailed)
+				return
+			case event, ok = <-events:
+				if !ok {
+					goto channelClosed
 				}
-				e.notifyDroppedQueuedMessages(state, err)
-				if state.agentSession == nil || !state.agentSession.Alive() {
-					e.cleanupInteractiveState(sessionKey, state)
+			case err := <-pendingSend:
+				pendingSend = nil
+				if err != nil {
+					slog.Error("failed to send prompt", "error", err, "session_key", sessionKey)
+					sp.discard()
+					if stopTyping != nil {
+						stopTyping()
+						stopTyping = nil
+					}
+					e.notifyDroppedQueuedMessages(state, err)
+					if state.agentSession == nil || !state.agentSession.Alive() {
+						e.cleanupInteractiveState(sessionKey, state)
+					}
+					state.mu.Lock()
+					p := state.platform
+					state.mu.Unlock()
+					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+					return
 				}
+				continue
+			case <-idleCh:
+				slog.Error("agent session idle timeout: no events for too long, killing session",
+					"session_key", sessionKey, "timeout", e.eventIdleTimeout, "elapsed", time.Since(turnStart))
+				cp.Finalize(ProgressCardStateFailed)
+				sp.discard()
+				state.mu.Lock()
+				state.eventsNeedResync = true
+				p := state.platform
+				state.mu.Unlock()
+				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session timed out (no response)"))
+				e.cleanupInteractiveState(sessionKey, state)
+				return
+			case <-turnDeadlineCh:
+				elapsed := time.Since(turnStart)
+				slog.Warn("agent turn exceeded max_turn_time: sending stop signal, will force-kill if needed",
+					"session_key", sessionKey, "max_turn_time", e.maxTurnTime, "elapsed", elapsed)
+				cp.Finalize(ProgressCardStateFailed)
+				sp.discard()
 				state.mu.Lock()
 				p := state.platform
 				state.mu.Unlock()
-				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-				return
-			}
-			continue
-		case <-idleCh:
-			slog.Error("agent session idle timeout: no events for too long, killing session",
-				"session_key", sessionKey, "timeout", e.eventIdleTimeout, "elapsed", time.Since(turnStart))
-			cp.Finalize(ProgressCardStateFailed)
-			sp.discard()
-			state.mu.Lock()
-			state.eventsNeedResync = true
-			p := state.platform
-			state.mu.Unlock()
-			e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), "agent session timed out (no response)"))
-			e.cleanupInteractiveState(sessionKey, state)
-			return
-		case <-turnDeadlineCh:
-			elapsed := time.Since(turnStart)
-			slog.Warn("agent turn exceeded max_turn_time: sending stop signal, will force-kill if needed",
-				"session_key", sessionKey, "max_turn_time", e.maxTurnTime, "elapsed", elapsed)
-			cp.Finalize(ProgressCardStateFailed)
-			sp.discard()
-			state.mu.Lock()
-			p := state.platform
-			state.mu.Unlock()
-			e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError),
-				fmt.Sprintf("agent turn exceeded maximum time (%v), stopping", e.maxTurnTime)))
+				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError),
+					fmt.Sprintf("agent turn exceeded maximum time (%v), stopping", e.maxTurnTime)))
 
-			// Two-phase shutdown: first try a graceful stop so the agent can
-			// write its final state before dying (preserves --resume ability).
-			// If it doesn't exit within a short grace window, force-kill.
-			state.markStopped()
-			gracePeriod := 10 * time.Second
-			graceTimer := time.NewTimer(gracePeriod)
-		graceLoop:
-			for {
-				select {
-				case evt, ok := <-state.agentSession.Events():
-					if !ok || (ok && evt.Done) {
-						// Agent exited cleanly; state is intact, resume will work.
-						slog.Info("agent exited gracefully after max_turn_time stop signal",
-							"session_key", sessionKey, "elapsed", time.Since(turnStart))
+				// Two-phase shutdown: first try a graceful stop so the agent can
+				// write its final state before dying (preserves --resume ability).
+				// If it doesn't exit within a short grace window, force-kill.
+				state.markStopped()
+				gracePeriod := 10 * time.Second
+				graceTimer := time.NewTimer(gracePeriod)
+			graceLoop:
+				for {
+					select {
+					case evt, ok := <-state.agentSession.Events():
+						if !ok || (ok && evt.Done) {
+							// Agent exited cleanly; state is intact, resume will work.
+							slog.Info("agent exited gracefully after max_turn_time stop signal",
+								"session_key", sessionKey, "elapsed", time.Since(turnStart))
+							graceTimer.Stop()
+							state.mu.Lock()
+							state.eventsNeedResync = false
+							state.mu.Unlock()
+							break graceLoop
+						}
+					case <-graceTimer.C:
+						// Agent did not stop within grace period — force-kill.
+						slog.Error("agent did not stop within grace period after max_turn_time; force-killing",
+							"session_key", sessionKey, "grace_period", gracePeriod)
 						graceTimer.Stop()
 						state.mu.Lock()
-						state.eventsNeedResync = false
+						state.eventsNeedResync = true
 						state.mu.Unlock()
-						break graceLoop
+						e.cleanupInteractiveState(sessionKey, state)
+						return
 					}
-				case <-graceTimer.C:
-					// Agent did not stop within grace period — force-kill.
-					slog.Error("agent did not stop within grace period after max_turn_time; force-killing",
-						"session_key", sessionKey, "grace_period", gracePeriod)
-					graceTimer.Stop()
-					state.mu.Lock()
-					state.eventsNeedResync = true
-					state.mu.Unlock()
-					e.cleanupInteractiveState(sessionKey, state)
-					return
 				}
+				// Graceful exit path: cleanupInteractiveState closes the session,
+				// but eventsNeedResync=false so the next --resume works correctly.
+				e.cleanupInteractiveState(sessionKey, state)
+				return
+			case <-e.ctx.Done():
+				cp.Finalize(ProgressCardStateFailed)
+				state.mu.Lock()
+				state.eventsNeedResync = true
+				state.mu.Unlock()
+				return
 			}
-			// Graceful exit path: cleanupInteractiveState closes the session,
-			// but eventsNeedResync=false so the next --resume works correctly.
-			e.cleanupInteractiveState(sessionKey, state)
-			return
-		case <-e.ctx.Done():
-			state.mu.Lock()
-			state.eventsNeedResync = true
-			state.mu.Unlock()
-			return
 		}
 
 		if state.isStopped() {
 			sp.discard()
+			cp.Finalize(ProgressCardStateFailed)
 			state.mu.Lock()
 			state.eventsNeedResync = true
 			state.mu.Unlock()
@@ -5409,6 +5430,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			firstEventLogged = true
 			if elapsed := time.Since(waitStart); elapsed >= slowAgentFirstEvent {
 				slog.Warn("slow agent first event", "elapsed", elapsed, "session", sessionKey, "event_type", event.Type)
+			}
+		}
+
+		if !fromInjected {
+			extra, keep := think.accept(event)
+			if len(extra) > 0 || !keep {
+				injected = append(injected, extra...)
+				if keep {
+					injected = append(injected, event)
+				}
+				continue
 			}
 		}
 
@@ -6484,7 +6516,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
 				}
 				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
-				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, userVisibleAgentName(e.agent), e.i18n.CurrentLang(), queuedRenderer)
+				cp = e.newTurnProgressWriter(queued.platform, queued.replyCtx, queuedRenderer)
+				think.reset()
+				injected = nil
 
 				// Reset streaming card state for the next turn
 				streamCard = nil
@@ -6603,6 +6637,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 channelClosed:
 	// Channel closed - process exited unexpectedly
+	cp.Finalize(ProgressCardStateFailed)
 	slog.Warn("agent process exited", "session_key", sessionKey)
 	state.mu.Lock()
 	state.eventsNeedResync = true

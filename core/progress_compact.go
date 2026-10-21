@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -24,7 +26,14 @@ const (
 	// Bound each platform progress-card API call so a hung upstream request
 	// does not block the whole turn forever.
 	compactProgressAPITimeout = 15 * time.Second
+
+	// progressDigestInterval is the longest a digest-mode batch waits before send.
+	progressDigestInterval   = 30 * time.Second
+	progressDigestFlushRunes = 3000
+	progressMaxRollovers     = 2
 )
+
+var progressUpdateFailureBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
 
 type ProgressCardState string
 
@@ -203,7 +212,10 @@ func inferLegacyEntryKind(entry string) ProgressCardEntryKind {
 
 // compactProgressWriter coalesces intermediate progress (thinking/tool-use)
 // into one editable message for platforms that support message updates.
+// A timer goroutine may flush a trailing edit, so every field read or written
+// after construction is guarded by mu.
 type compactProgressWriter struct {
+	mu        sync.Mutex
 	ctx       context.Context
 	platform  Platform
 	replyCtx  any
@@ -214,7 +226,6 @@ type compactProgressWriter struct {
 	handle  any
 
 	enabled    bool
-	failed     bool
 	style      string
 	usePayload bool
 
@@ -228,9 +239,32 @@ type compactProgressWriter struct {
 	lastSent   string
 	maxEntries int
 
-	// Throttle message edits to avoid platform rate limits (e.g. Discord ~5 edits/5s).
+	// minUpdateInterval is the gap between progress edits. The larger of the
+	// core interval and a platform ProgressUpdateThrottler wins.
 	minUpdateInterval time.Duration
 	lastUpdateAt      time.Time
+	backoffUntil      time.Time
+
+	consecutiveFailures int
+	rollovers           int
+	maxRollovers        int
+	createAttempts      int
+	createRetryDelay    time.Duration
+	updateBackoffs      []time.Duration
+
+	digestMode       bool
+	digestHeader     string
+	digestBuf        strings.Builder
+	digestSeeded     int
+	digestInterval   time.Duration
+	digestFlushRunes int
+
+	finalized bool
+
+	now       func() time.Time
+	afterFunc func(time.Duration, func()) func() bool
+	timerStop func() bool
+	timerGen  int
 }
 
 func normalizeProgressStyle(style string) string {
@@ -292,21 +326,43 @@ func SuppressStandaloneToolResultEvent(p Platform) bool {
 	return progressStyleForPlatform(p) == progressStyleLegacy
 }
 
-func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, agentName string, lang Language, transform func(string) string) *compactProgressWriter {
-	w := &compactProgressWriter{
-		ctx:        ctx,
-		platform:   p,
-		replyCtx:   replyCtx,
-		transform:  transform,
-		style:      progressStyleForTarget(p, replyCtx),
-		state:      ProgressCardStateRunning,
-		agentName:  normalizeProgressAgentLabel(agentName),
-		lang:       lang,
-		maxEntries: 10,
+func progressEditInterval(coreInterval time.Duration, p Platform) time.Duration {
+	if coreInterval < 0 {
+		coreInterval = 0
 	}
+	interval := coreInterval
 	if throttler, ok := p.(ProgressUpdateThrottler); ok {
-		w.minUpdateInterval = throttler.ProgressUpdateInterval()
+		if pi := throttler.ProgressUpdateInterval(); pi > interval {
+			interval = pi
+		}
 	}
+	return interval
+}
+
+func newCompactProgressWriter(ctx context.Context, p Platform, replyCtx any, agentName string, lang Language, transform func(string) string, coreInterval time.Duration, digestHeader string) *compactProgressWriter {
+	w := &compactProgressWriter{
+		ctx:              ctx,
+		platform:         p,
+		replyCtx:         replyCtx,
+		transform:        transform,
+		style:            progressStyleForTarget(p, replyCtx),
+		state:            ProgressCardStateRunning,
+		agentName:        normalizeProgressAgentLabel(agentName),
+		lang:             lang,
+		maxEntries:       10,
+		maxRollovers:     progressMaxRollovers,
+		createRetryDelay: 2 * time.Second,
+		updateBackoffs:   append([]time.Duration(nil), progressUpdateFailureBackoffs...),
+		digestHeader:     strings.TrimSpace(digestHeader),
+		digestInterval:   progressDigestInterval,
+		digestFlushRunes: progressDigestFlushRunes,
+		now:              time.Now,
+		afterFunc: func(d time.Duration, f func()) func() bool {
+			t := time.AfterFunc(d, f)
+			return t.Stop
+		},
+	}
+	w.minUpdateInterval = progressEditInterval(coreInterval, p)
 	if w.style != progressStyleCompact && w.style != progressStyleCard {
 		slog.Debug("progress writer disabled: unsupported style", "platform", p.Name(), "style", w.style)
 		return w
@@ -393,9 +449,16 @@ func (w *compactProgressWriter) AppendEvent(kind ProgressCardEntryKind, text str
 }
 
 // AppendStructured appends one structured progress event and updates the in-place message.
+// It returns false only when the writer is disabled (legacy style, or the platform
+// cannot edit messages). Transient card failures stay inside the writer.
 func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallback string) bool {
-	if !w.enabled || w.failed {
-		return false
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.enabled || w.finalized {
+		return w.enabled && w.finalized
+	}
+	if w.ctx.Err() != nil {
+		return true
 	}
 	text := strings.TrimSpace(item.Text)
 	fallback = strings.TrimSpace(fallback)
@@ -430,13 +493,15 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		w.entries = append(w.entries, fallback)
 		truncated := false
 		if w.maxEntries > 0 && len(w.items) > w.maxEntries {
-			w.items = w.items[len(w.items)-w.maxEntries:]
+			drop := len(w.items) - w.maxEntries
+			w.items = w.items[drop:]
 			if len(w.entries) > w.maxEntries {
 				w.entries = w.entries[len(w.entries)-w.maxEntries:]
 			}
-			truncated = true
-		} else if w.maxEntries > 0 && len(w.entries) > w.maxEntries {
-			w.entries = w.entries[len(w.entries)-w.maxEntries:]
+			w.digestSeeded -= drop
+			if w.digestSeeded < 0 {
+				w.digestSeeded = 0
+			}
 			truncated = true
 		}
 		w.truncated = truncated
@@ -444,14 +509,17 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 			w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
 			if w.content == "" {
 				slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
-				w.failed = true
-				return false
+				w.enterDigestLocked()
+				w.consumeNewDigestsLocked()
+				w.maybeFlushDigestLocked(false)
+				return true
 			}
 		} else {
 			w.content = renderCardProgressMarkdownFallback(w.entries, truncated)
 			w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
 		}
 	default:
+		w.entries = append(w.entries, fallback)
 		if w.content == "" {
 			w.content = fallback
 		} else {
@@ -460,86 +528,332 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
 	}
 
-	if w.content == w.lastSent {
+	if w.digestMode {
+		w.consumeNewDigestsLocked()
+		w.maybeFlushDigestLocked(false)
 		return true
 	}
-
-	if w.handle == nil {
-		if w.starter != nil {
-			callCtx, cancel := w.withAPITimeout()
-			handle, err := w.starter.SendPreviewStart(callCtx, w.replyCtx, w.content)
-			cancel()
-			if err != nil || handle == nil {
-				slog.Warn("progress writer: SendPreviewStart failed", "platform", w.platform.Name(), "style", w.style, "error", err, "handle_nil", handle == nil)
-				w.failed = true
-				return false
-			}
-			w.handle = handle
-			w.lastSent = w.content
-			w.lastUpdateAt = time.Now()
-			return true
-		}
-		callCtx, cancel := w.withAPITimeout()
-		err := w.platform.Send(callCtx, w.replyCtx, w.content)
-		cancel()
-		if err != nil {
-			slog.Warn("progress writer: initial Send failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-			w.failed = true
-			return false
-		}
-		w.handle = w.replyCtx
-		w.lastSent = w.content
-		w.lastUpdateAt = time.Now()
-		return true
-	}
-
-	if w.minUpdateInterval > 0 && time.Since(w.lastUpdateAt) < w.minUpdateInterval {
-		return true
-	}
-
-	callCtx, cancel := w.withAPITimeout()
-	err := w.updater.UpdateMessage(callCtx, w.handle, w.content)
-	cancel()
-	if err != nil {
-		slog.Warn("progress writer: UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
-		return false
-	}
-	w.lastSent = w.content
-	w.lastUpdateAt = time.Now()
+	w.syncLocked(false)
 	return true
 }
 
-// Finalize updates card progress state (running/completed/failed) without
-// appending a new progress entry.
+// Finalize pushes the terminal card state, or flushes a digest. It is safe to call twice.
 func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
-	if !w.enabled || w.failed || w.style != progressStyleCard || !w.usePayload || w.handle == nil {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.enabled {
 		return false
+	}
+	if w.finalized {
+		return true
+	}
+	w.finalized = true
+	w.cancelTimerLocked()
+	if w.ctx.Err() != nil {
+		return true
+	}
+	if w.digestMode {
+		w.flushDigestLocked()
+		return true
 	}
 	if state == "" {
 		state = ProgressCardStateCompleted
 	}
-	if w.state == state {
+	if w.style == progressStyleCard && w.usePayload && (len(w.items) > 0 || w.content != "") {
+		w.state = state
+		rebuilt := BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
+		if rebuilt == "" {
+			slog.Warn("progress writer: failed to build final payload", "platform", w.platform.Name())
+			w.enterDigestLocked()
+			w.flushDigestLocked()
+			return true
+		}
+		w.content = rebuilt
+	}
+	if w.content == "" {
 		return true
 	}
-	w.state = state
-	w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
-	if w.content == "" || w.content == w.lastSent {
-		return w.content != ""
+	if w.handle == nil {
+		w.createAttempts = 0
+		w.tryCreateLocked()
+		if w.digestMode {
+			w.flushDigestLocked()
+		}
+		return true
 	}
-	callCtx, cancel := w.withAPITimeout()
-	err := w.updater.UpdateMessage(callCtx, w.handle, w.content)
-	cancel()
-	if err != nil {
-		slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
-		w.failed = true
-		return false
+	if w.content == w.lastSent {
+		return true
+	}
+	if err := w.updateOnceLocked(); err != nil {
+		if w.ctx.Err() != nil {
+			return true
+		}
+		slog.Warn("progress writer: Finalize UpdateMessage failed, retrying", "platform", w.platform.Name(), "error", err)
+		if err2 := w.updateOnceLocked(); err2 != nil {
+			if w.ctx.Err() != nil {
+				return true
+			}
+			slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "error", err2)
+			return false
+		}
 	}
 	w.lastSent = w.content
+	w.lastUpdateAt = w.now()
+	w.consecutiveFailures = 0
 	return true
 }
 
+func (w *compactProgressWriter) syncLocked(force bool) {
+	if w.ctx.Err() != nil || w.digestMode || w.finalized {
+		return
+	}
+	if force {
+		w.backoffUntil = time.Time{}
+	} else if !w.backoffUntil.IsZero() && w.now().Before(w.backoffUntil) {
+		return
+	}
+	if w.content == "" || w.content == w.lastSent {
+		return
+	}
+	if w.handle == nil {
+		w.tryCreateLocked()
+		return
+	}
+	if !force && w.minUpdateInterval > 0 {
+		elapsed := w.now().Sub(w.lastUpdateAt)
+		if elapsed < w.minUpdateInterval {
+			w.scheduleLocked(w.minUpdateInterval-elapsed, false)
+			return
+		}
+	}
+	w.tryUpdateLocked()
+}
+
+func (w *compactProgressWriter) tryCreateLocked() {
+	if w.ctx.Err() != nil {
+		return
+	}
+	handle, err := w.createOnceLocked()
+	if err == nil && w.ctx.Err() == nil {
+		w.handle = handle
+		w.lastSent = w.content
+		w.lastUpdateAt = w.now()
+		w.consecutiveFailures = 0
+		w.createAttempts = 0
+		w.backoffUntil = time.Time{}
+		return
+	}
+	if w.ctx.Err() != nil {
+		return
+	}
+	slog.Warn("progress writer: create failed", "platform", w.platform.Name(), "style", w.style, "error", err)
+	w.createAttempts++
+	if w.createAttempts <= 1 {
+		w.backoffUntil = w.now().Add(w.createRetryDelay)
+		w.scheduleLocked(w.createRetryDelay, true)
+		return
+	}
+	w.enterDigestLocked()
+	w.maybeFlushDigestLocked(false)
+}
+
+func (w *compactProgressWriter) createOnceLocked() (any, error) {
+	if w.starter != nil {
+		callCtx, cancel := w.withAPITimeout()
+		handle, err := w.starter.SendPreviewStart(callCtx, w.replyCtx, w.content)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		if handle == nil {
+			return nil, fmt.Errorf("progress writer: empty preview handle")
+		}
+		return handle, nil
+	}
+	callCtx, cancel := w.withAPITimeout()
+	err := w.platform.Send(callCtx, w.replyCtx, w.content)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	return w.replyCtx, nil
+}
+
+func (w *compactProgressWriter) tryUpdateLocked() {
+	err := w.updateOnceLocked()
+	if err == nil {
+		w.lastSent = w.content
+		w.lastUpdateAt = w.now()
+		w.consecutiveFailures = 0
+		w.backoffUntil = time.Time{}
+		return
+	}
+	if w.ctx.Err() != nil {
+		return
+	}
+	slog.Warn("progress writer: UpdateMessage failed", "platform", w.platform.Name(), "style", w.style, "error", err)
+	w.consecutiveFailures++
+	if w.consecutiveFailures >= 3 {
+		w.rolloverLocked()
+		return
+	}
+	delay := w.backoffDelay(w.consecutiveFailures)
+	w.backoffUntil = w.now().Add(delay)
+	w.scheduleLocked(delay, true)
+}
+
+func (w *compactProgressWriter) updateOnceLocked() error {
+	callCtx, cancel := w.withAPITimeout()
+	err := w.updater.UpdateMessage(callCtx, w.handle, w.content)
+	cancel()
+	return err
+}
+
+func (w *compactProgressWriter) backoffDelay(failures int) time.Duration {
+	backoffs := w.updateBackoffs
+	if len(backoffs) == 0 {
+		backoffs = progressUpdateFailureBackoffs
+	}
+	idx := failures - 1
+	if idx < 0 {
+		idx = 0
+	}
+	if idx >= len(backoffs) {
+		idx = len(backoffs) - 1
+	}
+	return backoffs[idx]
+}
+
+func (w *compactProgressWriter) rolloverLocked() {
+	if w.ctx.Err() != nil {
+		return
+	}
+	w.handle = nil
+	w.lastSent = ""
+	w.consecutiveFailures = 0
+	w.backoffUntil = time.Time{}
+	w.cancelTimerLocked()
+	if w.rollovers >= w.maxRollovers {
+		w.enterDigestLocked()
+		w.flushDigestLocked()
+		return
+	}
+	w.rollovers++
+	w.createAttempts = 0
+	w.tryCreateLocked()
+}
+
+func (w *compactProgressWriter) enterDigestLocked() {
+	if w.digestMode {
+		return
+	}
+	w.digestMode = true
+	w.handle = nil
+	w.cancelTimerLocked()
+	w.backoffUntil = time.Time{}
+	w.consumeNewDigestsLocked()
+}
+
+func (w *compactProgressWriter) consumeNewDigestsLocked() {
+	for w.digestSeeded < len(w.entries) {
+		w.appendDigestLocked(w.entries[w.digestSeeded])
+		w.digestSeeded++
+	}
+}
+
+func (w *compactProgressWriter) appendDigestLocked(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if w.digestBuf.Len() > 0 {
+		w.digestBuf.WriteByte('\n')
+	}
+	w.digestBuf.WriteString(text)
+}
+
+func (w *compactProgressWriter) maybeFlushDigestLocked(force bool) {
+	if w.ctx.Err() != nil || w.digestBuf.Len() == 0 {
+		return
+	}
+	if !force && utf8.RuneCountInString(w.digestBuf.String()) < w.digestFlushRunes {
+		w.scheduleLocked(w.digestInterval, false)
+		return
+	}
+	w.flushDigestLocked()
+}
+
+func (w *compactProgressWriter) flushDigestLocked() {
+	if w.ctx.Err() != nil {
+		return
+	}
+	body := strings.TrimSpace(w.digestBuf.String())
+	w.digestBuf.Reset()
+	if body == "" {
+		return
+	}
+	header := w.digestHeader
+	if header == "" {
+		header = "Progress (live card unavailable)"
+	}
+	budget := maxPlatformMessageLen - utf8.RuneCountInString(header) - 1
+	if budget < 1 {
+		budget = maxPlatformMessageLen
+	}
+	chunks := SplitMessageCodeFenceAware(body, budget)
+	for _, chunk := range chunks {
+		msg := header + "\n" + chunk
+		callCtx, cancel := w.withAPITimeout()
+		err := w.platform.Send(callCtx, w.replyCtx, msg)
+		cancel()
+		if err != nil {
+			slog.Warn("progress writer: digest send failed", "platform", w.platform.Name(), "error", err)
+			return
+		}
+	}
+}
+
+func (w *compactProgressWriter) scheduleLocked(delay time.Duration, replace bool) {
+	if w.timerStop != nil && !replace {
+		return
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	w.cancelTimerLocked()
+	gen := w.timerGen
+	w.timerStop = w.afterFunc(delay, func() { w.onTimer(gen) })
+}
+
+func (w *compactProgressWriter) cancelTimerLocked() {
+	w.timerGen++
+	if w.timerStop != nil {
+		w.timerStop()
+		w.timerStop = nil
+	}
+}
+
+func (w *compactProgressWriter) onTimer(gen int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if gen != w.timerGen || w.finalized {
+		return
+	}
+	w.timerStop = nil
+	if w.ctx.Err() != nil {
+		return
+	}
+	if w.digestMode {
+		w.flushDigestLocked()
+		return
+	}
+	w.syncLocked(true)
+}
+
 func (w *compactProgressWriter) withAPITimeout() (context.Context, context.CancelFunc) {
+	if w.ctx.Err() != nil {
+		return w.ctx, func() {}
+	}
 	if _, hasDeadline := w.ctx.Deadline(); hasDeadline {
 		return w.ctx, func() {}
 	}

@@ -174,7 +174,7 @@ func TestMapSessionUpdate_reasoningChunk(t *testing.T) {
 		}
 	}`)
 	evs := mapSessionUpdate("", params)
-	if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Content != "step 1" {
+	if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Content != "step 1" || !evs[0].Delta {
 		t.Fatalf("got %+v", evs)
 	}
 }
@@ -341,12 +341,34 @@ func TestSummarizeACPToolInput(t *testing.T) {
 func TestMapSessionUpdate_agentThoughtChunk(t *testing.T) {
 	params := json.RawMessage(`{"sessionId":"s1","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"x"}}}`)
 	evs := mapSessionUpdate("", params)
-	if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Content != "x" {
-		t.Fatalf("expected thinking event, got %+v", evs)
+	if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Content != "x" || !evs[0].Delta {
+		t.Fatalf("expected delta thinking event, got %+v", evs)
 	}
 	for _, ev := range evs {
 		if ev.Type == core.EventText {
 			t.Fatalf("thought leaked into text: %+v", ev)
 		}
+	}
+}
+
+func TestMapSessionUpdate_ThinkingChunksAreDeltasPlansAreNot(t *testing.T) {
+	for _, kind := range []string{"agent_thought_chunk", "agent_thinking_chunk", "reasoning_chunk"} {
+		params := json.RawMessage(`{"sessionId":"s1","update":{"sessionUpdate":"` + kind + `","content":{"type":"text","text":"x"}}}`)
+		evs := mapSessionUpdate("", params)
+		if len(evs) != 1 || evs[0].Type != core.EventThinking || !evs[0].Delta || evs[0].Content != "x" {
+			t.Fatalf("%s: got %+v", kind, evs)
+		}
+	}
+	for _, kind := range []string{"thinking", "reasoning"} {
+		params := json.RawMessage(`{"sessionId":"s1","update":{"sessionUpdate":"` + kind + `","text":"whole block"}}`)
+		evs := mapSessionUpdate("", params)
+		if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Delta || evs[0].Content != "whole block" {
+			t.Fatalf("%s: got %+v", kind, evs)
+		}
+	}
+	plan := json.RawMessage(`{"sessionId":"s1","update":{"sessionUpdate":"plan","entries":[{"content":"step 1","status":"pending"}]}}`)
+	evs := mapSessionUpdate("", plan)
+	if len(evs) != 1 || evs[0].Type != core.EventThinking || evs[0].Delta || evs[0].Content != "[pending] step 1" {
+		t.Fatalf("plan thinking should be a whole block, got %+v", evs)
 	}
 }

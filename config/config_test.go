@@ -6,9 +6,30 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
+
+func TestEffectiveProgressUpdateInterval(t *testing.T) {
+	if got := EffectiveProgressUpdateInterval(&Config{}, nil); got != time.Second {
+		t.Fatalf("default = %s, want 1s", got)
+	}
+	zero := 0
+	if got := EffectiveProgressUpdateInterval(&Config{Display: DisplayConfig{ProgressUpdateIntervalMs: &zero}}, nil); got != 0 {
+		t.Fatalf("zero = %s, want 0", got)
+	}
+	global := 2500
+	project := 500
+	cfg := &Config{Display: DisplayConfig{ProgressUpdateIntervalMs: &global}}
+	proj := &ProjectConfig{Display: &DisplayConfig{ProgressUpdateIntervalMs: &project}}
+	if got := EffectiveProgressUpdateInterval(cfg, proj); got != 500*time.Millisecond {
+		t.Fatalf("project override = %s, want 500ms", got)
+	}
+	if got := EffectiveProgressUpdateInterval(cfg, &ProjectConfig{}); got != 2500*time.Millisecond {
+		t.Fatalf("global = %s, want 2500ms", got)
+	}
+}
 
 func TestConfigValidate(t *testing.T) {
 	tests := []struct {

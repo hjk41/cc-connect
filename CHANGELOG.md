@@ -27,6 +27,9 @@ Beta since v1.5.0 stable — 16 merged PRs focused on Feishu/Weixin reliability,
 - **Reasonix agent**: new agent adapter for Reasonix multi-model coding agent, bridging via HTTP serve API (POST /submit, SSE /events, POST /approve). Supports default/yolo/plan permission modes, SSE auto-reconnect with backoff, and thinking accumulator. (#1281)
 - **cloud_web platform**: 新增 self-hosted IM Gateway 作为 first-class platform 接入 (CWIP v1 协议,支持 websocket / long_poll / gateway 3 种 transport,完整 inbound/outbound + capability negotiation + graceful degradation)。 详见 docs/cloud-web.md + #1282。
 
+### Fixed
+- **Progress cards**: streamed thinking deltas are coalesced into whole blocks before any card or chat render. Progress edits are throttled (default 1s, `[display] progress_update_interval_ms`, with a trailing update so the latest snapshot is not dropped). A failed card update retries with backoff, rolls over to a new card, or falls back to one digest message — it no longer sends one chat message per event.
+
 ## Unreleased
 
 ### Added
