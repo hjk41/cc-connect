@@ -60,6 +60,12 @@ type ProgressCardEntry struct {
 	Status   string                `json:"status,omitempty"`
 	ExitCode *int                  `json:"exit_code,omitempty"`
 	Success  *bool                 `json:"success,omitempty"`
+	// ToolCallID ties snapshots of one tool call. Replacement is in memory;
+	// the id is not part of the platform payload.
+	ToolCallID string `json:"-"`
+	// Partial, for a tool result, means Text is a non-final output snapshot.
+	// Digest mode skips these. Not part of the platform payload.
+	Partial bool `json:"-"`
 }
 
 // ProgressCardPayload carries structured progress entries for platforms that
@@ -229,15 +235,18 @@ type compactProgressWriter struct {
 	style      string
 	usePayload bool
 
-	content    string
-	entries    []string
-	items      []ProgressCardEntry
-	state      ProgressCardState
-	agentName  string
-	lang       Language
-	truncated  bool
-	lastSent   string
-	maxEntries int
+	content string
+	entries []string
+	items   []ProgressCardEntry
+	// entryCallIDs is parallel to entries. A non-empty id marks a tool-result
+	// line that a later snapshot with the same id replaces.
+	entryCallIDs []string
+	state        ProgressCardState
+	agentName    string
+	lang         Language
+	truncated    bool
+	lastSent     string
+	maxEntries   int
 
 	// minUpdateInterval is the gap between progress edits. The larger of the
 	// core interval and a platform ProgressUpdateThrottler wins.
@@ -486,46 +495,77 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	item.Text = text
 	item.Tool = strings.TrimSpace(item.Tool)
 	item.Status = strings.TrimSpace(item.Status)
+	item.ToolCallID = strings.TrimSpace(item.ToolCallID)
+	if item.Kind != ProgressEntryToolResult {
+		item.ToolCallID = ""
+		item.Partial = false
+	}
+
+	// Digest messages are append-only. A non-final snapshot would just be
+	// replaced later, so it never becomes its own chat line.
+	if w.digestMode && item.Kind == ProgressEntryToolResult && item.Partial {
+		return true
+	}
+
+	callID := item.ToolCallID
+	replaced := false
+	if callID != "" && !w.digestMode {
+		if idx := w.toolResultIndexLocked(callID); idx >= 0 {
+			if idx < len(w.items) {
+				w.items[idx] = item
+			}
+			if idx < len(w.entries) {
+				w.entries[idx] = fallback
+			}
+			w.entryCallIDs[idx] = callID
+			replaced = true
+		}
+	}
+	if !replaced {
+		switch w.style {
+		case progressStyleCard:
+			w.items = append(w.items, item)
+			w.entries = append(w.entries, fallback)
+			w.entryCallIDs = append(w.entryCallIDs, callID)
+			truncated := false
+			if w.maxEntries > 0 && len(w.items) > w.maxEntries {
+				drop := len(w.items) - w.maxEntries
+				w.items = w.items[drop:]
+				if len(w.entries) > w.maxEntries {
+					w.entries = w.entries[len(w.entries)-w.maxEntries:]
+				}
+				if len(w.entryCallIDs) > w.maxEntries {
+					w.entryCallIDs = w.entryCallIDs[len(w.entryCallIDs)-w.maxEntries:]
+				}
+				w.digestSeeded -= drop
+				if w.digestSeeded < 0 {
+					w.digestSeeded = 0
+				}
+				truncated = true
+			}
+			w.truncated = truncated
+		default:
+			w.entries = append(w.entries, fallback)
+			w.entryCallIDs = append(w.entryCallIDs, callID)
+			if w.content == "" {
+				w.content = fallback
+			} else {
+				w.content += "\n\n" + fallback
+			}
+			w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
+		}
+	}
 
 	switch w.style {
 	case progressStyleCard:
-		w.items = append(w.items, item)
-		w.entries = append(w.entries, fallback)
-		truncated := false
-		if w.maxEntries > 0 && len(w.items) > w.maxEntries {
-			drop := len(w.items) - w.maxEntries
-			w.items = w.items[drop:]
-			if len(w.entries) > w.maxEntries {
-				w.entries = w.entries[len(w.entries)-w.maxEntries:]
-			}
-			w.digestSeeded -= drop
-			if w.digestSeeded < 0 {
-				w.digestSeeded = 0
-			}
-			truncated = true
-		}
-		w.truncated = truncated
-		if w.usePayload {
-			w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
-			if w.content == "" {
-				slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
-				w.enterDigestLocked()
-				w.consumeNewDigestsLocked()
-				w.maybeFlushDigestLocked(false)
-				return true
-			}
-		} else {
-			w.content = renderCardProgressMarkdownFallback(w.entries, truncated)
-			w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
+		if !w.renderCardContentLocked() {
+			return true
 		}
 	default:
-		w.entries = append(w.entries, fallback)
-		if w.content == "" {
-			w.content = fallback
-		} else {
-			w.content += "\n\n" + fallback
+		if replaced {
+			w.content = strings.Join(w.entries, "\n\n")
+			w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
 		}
-		w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
 	}
 
 	if w.digestMode {
@@ -534,6 +574,35 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 		return true
 	}
 	w.syncLocked(false)
+	return true
+}
+
+// toolResultIndexLocked returns the entries index of a tool result with callID.
+func (w *compactProgressWriter) toolResultIndexLocked(callID string) int {
+	for i, id := range w.entryCallIDs {
+		if id == callID {
+			return i
+		}
+	}
+	return -1
+}
+
+// renderCardContentLocked refreshes w.content from the current items.
+// It returns false when payload encoding fails and the writer has switched to digest mode.
+func (w *compactProgressWriter) renderCardContentLocked() bool {
+	if w.usePayload {
+		w.content = BuildProgressCardPayloadV2(w.items, w.truncated, w.agentName, w.lang, w.state)
+		if w.content == "" {
+			slog.Warn("progress writer: failed to build structured payload", "platform", w.platform.Name())
+			w.enterDigestLocked()
+			w.consumeNewDigestsLocked()
+			w.maybeFlushDigestLocked(false)
+			return false
+		}
+		return true
+	}
+	w.content = renderCardProgressMarkdownFallback(w.entries, w.truncated)
+	w.content = trimCompactProgressText(w.content, compactProgressMaxChars)
 	return true
 }
 

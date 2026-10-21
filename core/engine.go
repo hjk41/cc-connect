@@ -5713,6 +5713,26 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					result = truncateIf(result, e.display.ToolMaxLen)
 				}
 				if result != "" || event.ToolStatus != "" || event.ToolExitCode != nil || event.ToolSuccess != nil {
+					resultMsg := e.formatToolResultEventFallback(event.ToolName, result, event.ToolStatus, event.ToolExitCode, event.ToolSuccess)
+					entry := ProgressCardEntry{
+						Kind:       ProgressEntryToolResult,
+						Tool:       event.ToolName,
+						Text:       result,
+						Status:     event.ToolStatus,
+						ExitCode:   event.ToolExitCode,
+						Success:    event.ToolSuccess,
+						ToolCallID: event.ToolCallID,
+						Partial:    event.Partial,
+					}
+					// A partial result is a live snapshot. Only the progress writer
+					// renders it, replacing the earlier snapshot in place. Rich cards,
+					// streaming cards, and per-message fallbacks wait for the final result.
+					if event.Partial {
+						if cp.enabled && !hasRichCard && (streamCard == nil || streamCard.Failed()) {
+							cp.AppendStructured(entry, resultMsg)
+						}
+						break
+					}
 					if hasRichCard {
 						toolSteps = mergeRichToolResult(toolSteps, event, result, e.display.ToolMaxLen)
 						if cardMessageID == nil {
@@ -5732,15 +5752,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 							}
 						}
 						break
-					}
-					resultMsg := e.formatToolResultEventFallback(event.ToolName, result, event.ToolStatus, event.ToolExitCode, event.ToolSuccess)
-					entry := ProgressCardEntry{
-						Kind:     ProgressEntryToolResult,
-						Tool:     event.ToolName,
-						Text:     result,
-						Status:   event.ToolStatus,
-						ExitCode: event.ToolExitCode,
-						Success:  event.ToolSuccess,
 					}
 					if !cp.AppendStructured(entry, resultMsg) {
 						if !SuppressStandaloneToolResultEvent(p) {
@@ -11134,6 +11145,9 @@ func (e *Engine) processCompressEvents(state *interactiveState, session *Session
 				textParts = append(textParts, event.Content)
 			}
 		case EventToolResult:
+			if event.Partial {
+				break
+			}
 			if !auto {
 				out := strings.TrimSpace(event.Content)
 				if out == "" {
@@ -16636,6 +16650,9 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 				saveRelaySessionID(event.SessionID, false)
 			}
 		case EventToolResult:
+			if event.Partial {
+				break
+			}
 			out := strings.TrimSpace(event.Content)
 			if out == "" {
 				out = strings.TrimSpace(event.ToolResult)

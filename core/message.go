@@ -484,11 +484,18 @@ type Event struct {
 	ToolStatus   string         // optional status for EventToolResult (e.g. completed/failed)
 	ToolExitCode *int           // optional exit code for EventToolResult
 	ToolSuccess  *bool          // optional success flag for EventToolResult
-	SessionID    string         // agent-managed session ID for conversation continuity
-	RequestID    string         // unique request ID for EventPermissionRequest
-	Questions    []UserQuestion // populated when ToolName == "AskUserQuestion"
-	Done         bool
-	Error        error
+	// ToolCallID optionally ties the EventToolUse and EventToolResult events of
+	// one tool call. Empty means the agent did not provide a stable id.
+	ToolCallID string
+	// Partial, for EventToolResult, means Content/ToolResult is a non-final
+	// snapshot of the tool output so far. A later EventToolResult with the same
+	// ToolCallID supersedes it. Agents that only emit final results leave it false.
+	Partial   bool
+	SessionID string         // agent-managed session ID for conversation continuity
+	RequestID string         // unique request ID for EventPermissionRequest
+	Questions []UserQuestion // populated when ToolName == "AskUserQuestion"
+	Done      bool
+	Error     error
 	// Delta, for EventThinking, means Content is an incremental fragment of one
 	// streaming thinking block. Consecutive Delta thinking events are concatenated
 	// verbatim (no separator). Agents that emit whole blocks leave it false.

@@ -2676,8 +2676,10 @@ func TestCUJ_ProgressCardFailureStaysBounded(t *testing.T) {
 		first = append(first, Event{Type: EventThinking, Content: part, Delta: true, SessionID: "cuj"})
 	}
 	first = append(first,
-		Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"},
-		Event{Type: EventToolResult, ToolName: "Bash", ToolResult: "ok"},
+		Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd", ToolCallID: "bash-1"},
+		Event{Type: EventToolResult, ToolName: "Bash", ToolCallID: "bash-1", ToolResult: "snapshot-alpha", Partial: true},
+		Event{Type: EventToolResult, ToolName: "Bash", ToolCallID: "bash-1", ToolResult: "snapshot-alpha\nsnapshot-beta", Partial: true},
+		Event{Type: EventToolResult, ToolName: "Bash", ToolCallID: "bash-1", ToolResult: "snapshot-omega"},
 		Event{Type: EventResult, Content: "final answer", Done: true},
 	)
 	agent.mu.Lock()
@@ -2709,12 +2711,20 @@ func TestCUJ_ProgressCardFailureStaysBounded(t *testing.T) {
 	if fragments > 0 {
 		t.Fatalf("thinking fragments leaked into chat: %#v", sent)
 	}
+	for _, msg := range sent {
+		if strings.Contains(msg, "snapshot-alpha") {
+			t.Fatalf("partial tool snapshot leaked into chat: %q", msg)
+		}
+	}
 	starts, updateErrs, _ := p.snapshot()
 	if updateErrs == 0 {
 		t.Fatal("card updates never failed")
 	}
 	coalesced := false
 	for _, raw := range starts {
+		if strings.Contains(raw, "snapshot-alpha") {
+			t.Fatalf("progress card kept a superseded tool snapshot: %s", raw)
+		}
 		payload, ok := ParseProgressCardPayload(raw)
 		if !ok {
 			continue

@@ -125,10 +125,11 @@ func mapToolCall(sessionID string, update json.RawMessage) []core.Event {
 		toolInput = u.Title
 	}
 	return []core.Event{{
-		Type:      core.EventToolUse,
-		ToolName:  toolName,
-		ToolInput: toolInput,
-		SessionID: sessionID,
+		Type:       core.EventToolUse,
+		ToolName:   toolName,
+		ToolInput:  toolInput,
+		ToolCallID: u.ToolCallID,
+		SessionID:  sessionID,
 	}}
 }
 
@@ -166,33 +167,30 @@ func mapToolCallUpdate(sessionID string, update json.RawMessage) []core.Event {
 		if st == "failed" && body == "" {
 			body = "(failed)"
 		}
-		return []core.Event{{
-			Type:      core.EventToolResult,
-			ToolName:  toolLabel,
-			Content:   truncateRunes(body, 800),
-			SessionID: sessionID,
-		}}
+		return []core.Event{acpToolResultEvent(sessionID, toolLabel, u.ToolCallID, body, false)}
 	case st == "in_progress" || st == "pending":
-		// Stream intermediate tool output to IM (ACP allows content while not terminal).
+		// Cumulative output while the tool is still running. Partial so a later
+		// snapshot with the same toolCallId replaces this one.
 		if body == "" {
 			return nil
 		}
-		return []core.Event{{
-			Type:      core.EventToolResult,
-			ToolName:  toolLabel,
-			Content:   truncateRunes(body, 800),
-			SessionID: sessionID,
-		}}
+		return []core.Event{acpToolResultEvent(sessionID, toolLabel, u.ToolCallID, body, true)}
 	default:
 		if body != "" {
-			return []core.Event{{
-				Type:      core.EventToolResult,
-				ToolName:  toolLabel,
-				Content:   truncateRunes(body, 800),
-				SessionID: sessionID,
-			}}
+			return []core.Event{acpToolResultEvent(sessionID, toolLabel, u.ToolCallID, body, false)}
 		}
 		return nil
+	}
+}
+
+func acpToolResultEvent(sessionID, toolLabel, toolCallID, body string, partial bool) core.Event {
+	return core.Event{
+		Type:       core.EventToolResult,
+		ToolName:   toolLabel,
+		ToolCallID: toolCallID,
+		Content:    truncateRunes(body, 800),
+		Partial:    partial,
+		SessionID:  sessionID,
 	}
 }
 
