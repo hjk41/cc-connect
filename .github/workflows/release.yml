@@ -1,0 +1,137 @@
+name: Fork Release
+
+on:
+  push:
+    tags: ['v*-fork.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  verify:
+    if: github.repository == 'hjk41/cc-connect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require a commit from main
+        run: git merge-base --is-ancestor HEAD origin/main
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - name: Build web assets
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Verify modules and test release commit
+        run: |
+          go mod verify
+          go vet ./...
+          go test -p=4 -parallel=4 -race -timeout=10m ./...
+          go test ./core/ -run TestCUJ -timeout=5m
+          go test -tags=smoke,regression,no_web -timeout=5m ./tests/e2e/...
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-web-assets
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [linux, darwin, windows]
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-web-assets
+          path: web/dist
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Build and package
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET_OS: ${{ matrix.os }}
+          TARGET_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          binary=cc-connect
+          if [ "$TARGET_OS" = windows ]; then binary=cc-connect.exe; fi
+          mkdir -p package dist
+          commit=$(git rev-parse --short HEAD)
+          build_time=$(git show -s --format=%cI HEAD)
+          GOOS="$TARGET_OS" GOARCH="$TARGET_ARCH" CGO_ENABLED=0 \
+            go build -tags goolm -trimpath \
+            -ldflags "-s -w -X main.version=$VERSION -X main.commit=$commit -X main.buildTime=$build_time" \
+            -o "package/$binary" ./cmd/cc-connect
+          cp LICENSE config.example.toml README.md README.zh-CN.md package/
+          archive="cc-connect-$VERSION-$TARGET_OS-$TARGET_ARCH"
+          if [ "$TARGET_OS" = windows ]; then
+            (cd package && zip -q "../dist/$archive.zip" ./*)
+          else
+            tar -czf "dist/$archive.tar.gz" -C package .
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binary-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  draft:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: binary-*
+          merge-multiple: true
+          path: dist
+      - name: Create draft release with checksums
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha256sum ./*.tar.gz ./*.zip > checksums.txt
+          if gh release view "$VERSION" --json isDraft --jq '.isDraft' > "$RUNNER_TEMP/release-is-draft"; then
+            test "$(cat "$RUNNER_TEMP/release-is-draft")" = true
+            gh release upload "$VERSION" ./*.tar.gz ./*.zip checksums.txt --clobber
+          else
+            gh release create "$VERSION" ./*.tar.gz ./*.zip checksums.txt \
+              --verify-tag --draft --generate-notes --title "CC-Connect fork $VERSION"
+          fi

@@ -3,29 +3,20 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenhg5/cc-connect/actions/workflows/ci.yml">
-    <img src="https://github.com/chenhg5/cc-connect/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/ci.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
   </a>
-  <a href="https://github.com/chenhg5/cc-connect/releases">
-    <img src="https://img.shields.io/github/v/release/chenhg5/cc-connect?include_prereleases" alt="Release"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"/>
   </a>
-  <a href="https://www.npmjs.com/package/cc-connect">
-    <img src="https://img.shields.io/npm/dm/cc-connect?logo=npm" alt="npm downloads"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml/badge.svg" alt="Upstream Sync"/>
   </a>
-  <a href="https://github.com/chenhg5/cc-connect/blob/main/LICENSE">
+  <a href="./LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"/>
   </a>
-  <a href="https://goreportcard.com/report/github.com/chenhg5/cc-connect">
-    <img src="https://goreportcard.com/badge/github.com/chenhg5/cc-connect" alt="Go Report Card"/>
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/kHpwgaM4kq">
-    <img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"/>
-  </a>
-  <a href="https://t.me/+odGNDhCjbjdmMmZl">
-    <img src="https://img.shields.io/badge/Telegram-Group-26A5E4?logo=telegram&logoColor=white" alt="Telegram"/>
+  <a href="./CONTRIBUTING.md">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"/>
   </a>
 </p>
 
@@ -33,18 +24,32 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/23266" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/23266" alt="chenhg5/cc-connect | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
-  </a>
-</p>
+# CC-Connect: maintained fork
 
+This is **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)**, an independently maintained fork of **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)**. Thank you to the original authors and community for building cc-connect.
 
-## ❤️ Sponsor
+Our work focuses on the day-to-day experience of **Codex, Cursor, Devin, and DeepSeek Harness (dsh)**. Upstream contributions can take time to land, so we maintain this fork to make improvements available sooner while continuing to follow upstream development.
+
+| Area | Improvements in this fork |
+|------|--------------------------|
+| Codex and shared streaming | Coalesced thinking updates, tool-output snapshots that replace earlier output, and more resilient progress cards. |
+| Cursor | Model and reasoning-effort selection, complete session history, reliable resume and cancellation. [Details](docs/cursor-parity.md). |
+| Devin | ACP model and effort selection, session handling, memory, skills, and context compaction. |
+| DeepSeek Harness (dsh) | Dedicated ACP adapter with model/provider selection, reasoning effort, session history, permission modes, and balance reporting. [Capabilities and limits](docs/dsh-parity.md). |
+
+We aim to **review and merge `upstream/main` daily**, with integration subject to passing checks and resolving conflicts. A daily [upstream sync workflow](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml) opens or updates a merge PR for maintainer review. We share useful fixes upstream when practical.
+
+**Issues and PRs are welcome**, including improvements beyond these four agents. Please use [this fork's issues](https://github.com/hjk41/cc-connect/issues) and target `hjk41/cc-connect:main` for pull requests. See [CONTRIBUTING.md](CONTRIBUTING.md), [security reporting](SECURITY.md), and the [maintenance guide](docs/maintaining.md).
+
+**Install this fork from source using the instructions below**, or use an asset from [this fork's releases](https://github.com/hjk41/cc-connect/releases) when available. The existing `cc-connect` npm package, Homebrew formula, and built-in `cc-connect update` currently use upstream distribution channels.
+
+## ❤️ Upstream sponsors
+
+The sponsorships and contacts below belong to the upstream project.
 
 > Want to appear here? Contact: chg80333@gmail.com | WeChat: mongorz
 
-<details open>
+<details>
 <summary>Sponsors</summary>
 
 [![Kimi](https://gcdn.moonshot.cn/growth-cdn/sponsor/kimi-en.png)](https://www.kimi.com/code/?aff=cc-connect)
@@ -193,7 +198,7 @@ cc-connect already supports Kimi CLI. Try a **Kimi Code plan** ([中文站](http
 </p>
 
 
-## 🆕 What’s New in v1.5.1-beta.1
+## 🆕 Upstream highlights in v1.5.1-beta.1
 
 Beta since v1.5.0 stable — 16 merged PRs. Highlights:
 
@@ -330,15 +335,19 @@ If you skip this step, `cc-connect` will still start, but the agent will reject 
 
 ### 3️⃣ Install cc-connect
 
+Requires Go 1.25 or newer, Node.js 24, and pnpm 10 for the web UI.
+
 ```bash
-# npm (any platform)
-npm install -g cc-connect
-
-# Homebrew (macOS / Linux)
-brew install cc-connect
-
-# Or download a binary from https://github.com/chenhg5/cc-connect/releases
+git clone https://github.com/hjk41/cc-connect.git
+cd cc-connect
+pnpm --dir web install --frozen-lockfile
+make build
+mkdir -p "$HOME/.local/bin"
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+Keep `~/.local/bin` on your shell's `PATH`. Windows users can use a fork release or build in Git Bash with Go, Node.js, pnpm, and Make installed.
 
 ### 4️⃣ Start cc-connect and open the Web UI
 
@@ -371,42 +380,22 @@ That's it — send a message to your bot and cc-connect will relay it to your lo
 > **The easiest way** — Send this to Claude Code or any AI coding agent, and it will handle the entire installation and configuration for you:
 
 ```bash
-Follow https://raw.githubusercontent.com/chenhg5/cc-connect/refs/heads/main/INSTALL.md to install and configure cc-connect.
+Follow https://raw.githubusercontent.com/hjk41/cc-connect/refs/heads/main/INSTALL.md to install and configure the hjk41/cc-connect fork from source.
 ```
 
 
 ### 📦 Manual Install
 
-**Via npm:**
+**Build this fork from source (Go 1.25+, Node.js 24, pnpm 10):**
 
 ```bash
-npm install -g cc-connect
-```
-
-**Via Homebrew (macOS / Linux):**
-
-```bash
-brew install cc-connect
-```
-
-**Download binary from [GitHub Releases](https://github.com/chenhg5/cc-connect/releases):**
-
-```bash
-# Linux amd64 - Stable
-curl -L -o cc-connect https://github.com/chenhg5/cc-connect/releases/latest/download/cc-connect-linux-amd64
-chmod +x cc-connect
-sudo mv cc-connect /usr/local/bin/
-
-```
-
-**Build from source (requires Go 1.22+):**
-
-```bash
-git clone https://github.com/chenhg5/cc-connect.git
+git clone https://github.com/hjk41/cc-connect.git
 cd cc-connect
+pnpm --dir web install --frozen-lockfile
 make build
 ```
 
+The binary is `./cc-connect`. Alternatively, extract an archive for your OS and architecture from [this fork's releases](https://github.com/hjk41/cc-connect/releases) when available, and verify it against the accompanying `checksums.txt`.
 
 ### ⚙️ Configure
 
@@ -435,17 +424,14 @@ When a user runs `/dir reset`, cc-connect restores the configured `work_dir` and
 ### 🔄 Upgrade
 
 ```bash
-# npm
-npm install -g cc-connect
-
-# Homebrew
-brew upgrade cc-connect
-
-# Binary self-update
-cc-connect update           # Stable
-cc-connect update --pre     # Include pre-releases
+cd cc-connect
+git pull --ff-only origin main
+pnpm --dir web install --frozen-lockfile
+make build
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
 ```
 
+Restart your service after upgrading. For binary installs, use a new archive from this fork's releases. The built-in updater currently downloads upstream builds, so use the steps above to retain the fork's changes.
 
 ## 📊 Support Matrix
 
@@ -653,15 +639,20 @@ Notes:
 - [INSTALL.md](INSTALL.md) — AI-agent-friendly installation guide
 - [config.example.toml](config.example.toml) — Configuration template
 - [CONTRIBUTING.md](CONTRIBUTING.md) — How to report issues and contribute pull requests
+- [Maintenance guide](docs/maintaining.md) — CI, upstream sync, and fork releases
+- [Security policy](SECURITY.md) — Private vulnerability reporting
 
 
-## 👥 Community
+## 👥 Community and contributions
 
-- [Discord](https://discord.gg/kHpwgaM4kq)
-- [Telegram](https://t.me/+odGNDhCjbjdmMmZl)
+- [Fork issues](https://github.com/hjk41/cc-connect/issues) — bugs, questions, and feature requests
+- [Fork pull requests](https://github.com/hjk41/cc-connect/pulls) — contributions welcome
+- Upstream community: [Discord](https://discord.gg/kHpwgaM4kq), [Telegram](https://t.me/+odGNDhCjbjdmMmZl)
 
 
-## ☕ Support the Project
+## ☕ Support the upstream project
+
+The donation links and acknowledgements in this section support the original upstream maintainers.
 
 If cc-connect has been helpful to you, consider buying us a coffee! Your support helps us:
 
@@ -690,7 +681,9 @@ We're grateful to everyone who has supported this project. Leave your GitHub use
 | <img src="https://avatars.githubusercontent.com/u/1762560?v=4" width="40" height="40" style="border-radius: 50%;"> | [@thx0701](https://github.com/thx0701) | 2026-04-29 |
 
 
-## 🤝 Commercial Cooperation
+## 🤝 Upstream commercial cooperation
+
+The following contact details are those of the upstream project.
 
 We accept the following commercial collaborations:
 
@@ -703,25 +696,12 @@ We accept the following commercial collaborations:
 
 ## 🙏 Contributors
 
-<a href="https://github.com/chenhg5/cc-connect/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=chenhg5/cc-connect&v=20250313" />
-</a>
-
-
-## ⭐ Star History
-
-<a href="https://www.star-history.com/#chenhg5/cc-connect&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date" />
- </picture>
-</a>
+Thanks to the [contributors to this fork](https://github.com/hjk41/cc-connect/graphs/contributors) and the [upstream contributors](https://github.com/chenhg5/cc-connect/graphs/contributors) whose work this project builds on.
 
 
 ## 📄 License
 
-MIT License
+[MIT License](LICENSE)
 
 
 <p align="center">

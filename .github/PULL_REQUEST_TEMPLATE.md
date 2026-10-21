@@ -1,6 +1,8 @@
 <!--
 Thanks for contributing! Please fill in the sections below.
 The reviewer will use the checklist at the bottom to gate merge.
+Target hjk41/cc-connect:main (GitHub may default to the upstream repository).
+English and Chinese are welcome. For docs or CI changes, mark irrelevant test sections N/A.
 -->
 
 ## Summary
@@ -25,7 +27,7 @@ The reviewer will use the checklist at the bottom to gate merge.
 
 <!-- List the test functions you added or modified. -->
 
-- `TestX_Y_Z` in `path/to/file_test.go` — what it asserts
+<!-- Test name, file, and what it asserts; use N/A for docs/config-only changes. -->
 
 ### For bug fixes only — regression test
 
@@ -40,8 +42,7 @@ The reviewer will use the checklist at the bottom to gate merge.
 
 ### Critical User Journeys (CUJ) impact
 
-<!-- See AGENTS.md → "Critical User Journeys (CUJ)" and the inventory in
-     projects/cc-connect/agents/qa-cursor/release-gate/CUJ-INVENTORY.md.
+<!-- See AGENTS.md → "Critical User Journeys (CUJ)" and core/cuj_test.go.
      Mark which CUJ groups this PR touches: -->
 
 - [ ] No CUJ touched (small refactor, doc change, etc.)

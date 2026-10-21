@@ -6,7 +6,11 @@
 
 cc-connect bridges local AI coding assistants to messaging platforms (Feishu, DingTalk, Telegram, Slack, Discord, LINE, WeChat Work, QQ, **personal WeChat** via the **Weixin (ilink)** platform).
 
-GitHub: https://github.com/chenhg5/cc-connect
+Fork: https://github.com/hjk41/cc-connect
+
+Upstream: https://github.com/chenhg5/cc-connect
+
+This guide installs the maintained **hjk41/cc-connect fork**, including its Codex, Cursor, Devin, and dsh improvements. Use the source build below or an available fork release. The existing npm package, Homebrew formula, and built-in updater currently download upstream builds.
 
 **IMPORTANT: If you are an AI agent helping a user install cc-connect, use interactive tools (like AskUserQuestion) to guide them through configuration choices:**
 - Agent selection (Claude Code, Cursor, Gemini, etc.)
@@ -18,54 +22,27 @@ Don't guess values—always ask the user to choose via interactive prompts.
 
 ## Step 1: Install cc-connect
 
-### Option A: npm (recommended for most users)
+### Option A: Build this fork from source
+
+Requires Go 1.25+, Node.js 24, pnpm 10, and Make. The commands below use a POSIX shell; Windows users can build in Git Bash or choose a fork release when available.
 
 ```bash
-npm install -g cc-connect
-```
-
-After installation, the `cc-connect` binary will be available globally.
-
-
-### Option B: Homebrew (macOS / Linux)
-
-```bash
-brew install cc-connect
-```
-
-### Option C: Download binary from GitHub Releases
-
-Go to https://github.com/chenhg5/cc-connect/releases and download the binary for your platform.
-
-Typical artifact names (check the release page for exact filenames):
-
-- Linux: `cc-connect-<version>-linux-amd64` (or `.tar.gz`)
-- macOS: `cc-connect-<version>-darwin-amd64` / `arm64`
-- Windows: `cc-connect-<version>-windows-amd64.exe` (or `.zip`)
-
-```bash
-# Example for Linux amd64 (replace URL with the asset link from the release you chose):
-curl -L -o cc-connect https://github.com/chenhg5/cc-connect/releases/latest/download/cc-connect-linux-amd64
-chmod +x cc-connect
-sudo mv cc-connect /usr/local/bin/
-```
-
-On macOS, you may need to remove the quarantine attribute:
-
-```bash
-xattr -d com.apple.quarantine cc-connect
-```
-
-### Option D: Build from source
-
-Requires Go 1.22+.
-
-```bash
-git clone https://github.com/chenhg5/cc-connect.git
+git clone https://github.com/hjk41/cc-connect.git
 cd cc-connect
+pnpm --dir web install --frozen-lockfile
 make build
-# Binary will be at ./cc-connect
+mkdir -p "$HOME/.local/bin"
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+Keep `~/.local/bin` on your shell's `PATH`. The source checkout also contains `config.example.toml` and the setup guides referenced below.
+
+### Option B: Use a fork release when available
+
+Check https://github.com/hjk41/cc-connect/releases. Fork tags have a `-fork.N` suffix, such as `v1.5.1-fork.1`. Download the archive matching your operating system and architecture and `checksums.txt`, then verify its SHA-256 checksum before extracting and installing `cc-connect` (or `cc-connect.exe` on Windows).
+
+The release workflow builds Linux, macOS, and Windows archives for amd64 and arm64. Until a maintainer publishes the first fork release, use the source build above. No separate npm package or Homebrew formula is published by this fork.
 
 ## Step 2: Install your AI Agent
 
@@ -715,29 +692,19 @@ app_token = "xapp-xxx"
 cc-connect --version
 ```
 
-### npm users
-
-```bash
-npm update -g cc-connect
-```
-
-### Binary users
-
-Check the latest release at https://github.com/chenhg5/cc-connect/releases and compare with your local version. To upgrade:
-
-```bash
-# Linux/macOS — replace with your platform suffix
-curl -L -o /usr/local/bin/cc-connect https://github.com/chenhg5/cc-connect/releases/latest/download/cc-connect-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/')
-chmod +x /usr/local/bin/cc-connect
-```
-
 ### Source users
 
 ```bash
 cd cc-connect
-git pull
+git pull --ff-only origin main
+pnpm --dir web install --frozen-lockfile
 make build
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
 ```
+
+### Binary users
+
+Download and verify a newer archive from https://github.com/hjk41/cc-connect/releases, then replace the installed binary. The built-in `cc-connect update` uses upstream releases and will replace fork-specific changes with an upstream build.
 
 After upgrading, restart the running cc-connect process.
 

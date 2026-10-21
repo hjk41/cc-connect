@@ -4,7 +4,7 @@
 # whenever a PR touches the matching paths.
 #
 # Project owner / default reviewer.
-*                                   @chenhg5
+*                                   @hjk41
 
 # ---------------------------------------------------------------------------
 # Critical paths — changes here should be reviewed with extra care because
@@ -22,32 +22,32 @@
 # ---------------------------------------------------------------------------
 
 # Engine core: message routing, command handling, interactive state.
-/core/engine.go                     @chenhg5
-/core/engine_test.go                @chenhg5
+/core/engine.go                     @hjk41
+/core/engine_test.go                @hjk41
 
 # Session manager: persistence, history, agent_session_id binding.
-/core/session.go                    @chenhg5
-/core/session_test.go               @chenhg5
+/core/session.go                    @hjk41
+/core/session_test.go               @hjk41
 
 # Scheduled task implementations.
-/core/cron.go                       @chenhg5
-/core/cron_test.go                  @chenhg5
-/core/timer.go                      @chenhg5
-/core/timer_test.go                 @chenhg5
+/core/cron.go                       @hjk41
+/core/cron_test.go                  @hjk41
+/core/timer.go                      @hjk41
+/core/timer_test.go                 @hjk41
 
 # Permission flow + bridge that talks to the agent.
-/core/bridge.go                     @chenhg5
-/core/interfaces.go                 @chenhg5
+/core/bridge.go                     @hjk41
+/core/interfaces.go                 @hjk41
 
 # i18n strings — user-facing copy must be reviewed for clarity and
 # all-language consistency.
-/core/i18n.go                       @chenhg5
+/core/i18n.go                       @hjk41
 
 # CUJ test framework itself — guards against regressions in the
 # tests that guard against regressions.
-/core/cuj_test.go                   @chenhg5
+/core/cuj_test.go                   @hjk41
 
 # Build / CI / project policy.
-/AGENTS.md                          @chenhg5
-/.github/                           @chenhg5
-/Makefile                           @chenhg5
+/AGENTS.md                          @hjk41
+/.github/                           @hjk41
+/Makefile                           @hjk41

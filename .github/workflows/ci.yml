@@ -5,177 +5,200 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
-  release:
-    types: [published]
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  lint:
+  workflow-lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Lint GitHub workflows
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+      - name: Test upstream sync behavior
+        run: bash .github/tests/upstream-sync.sh
 
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: '24'
+          cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
-
       - name: Build web assets
         working-directory: web
         run: |
           pnpm install --frozen-lockfile
           pnpm build
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          go-version-file: 'go.mod'
-          cache: true
+          name: web-assets
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
 
+  lint:
+    runs-on: ubuntu-latest
+    needs: web
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web-assets
+          path: web/dist
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
       - name: Lint code
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
           go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
           LINT_BIN="$(go env GOPATH)/bin/golangci-lint"
-
           run_lint() {
             "$LINT_BIN" run "$@" || {
               code=$?
-              # exit code 5 = "no go files to analyze" (e.g. only non-Go files changed) — not a lint failure
               [ "$code" -eq 5 ] && return 0
               return "$code"
             }
           }
-
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch --no-tags origin "${{ github.base_ref }}"
-            run_lint --new-from-rev "origin/${{ github.base_ref }}" ./...
-          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
-            run_lint --new-from-rev "${{ github.event.before }}" ./...
+          if [ "$EVENT_NAME" = pull_request ]; then
+            run_lint --new-from-rev "origin/$BASE_REF" ./...
+          elif [ "$EVENT_NAME" = push ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ]; then
+            run_lint --new-from-rev "$BEFORE_SHA" ./...
           elif git rev-parse --verify HEAD^ >/dev/null 2>&1; then
             run_lint --new-from-rev "$(git rev-parse HEAD^)" ./...
           else
             run_lint ./...
           fi
 
-      - name: Lint GitHub workflows
-        run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.8
-          "$(go env GOPATH)/bin/actionlint" -color
-
   unit-test:
-    runs-on: ubuntu-latest
-    needs: lint
-
+    name: Go (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    needs: web
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          version: 10
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          node-version: '20'
-          cache: 'pnpm'
-          cache-dependency-path: web/pnpm-lock.yaml
-
-      - name: Build web assets
-        working-directory: web
-        run: |
-          pnpm install --frozen-lockfile
-          pnpm build
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+          name: web-assets
+          path: web/dist
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version-file: 'go.mod'
-          cache: true
-
+          go-version-file: go.mod
       - name: Download dependencies
         run: go mod download
-        env:
-          GOPROXY: https://proxy.golang.org,direct
-          GOSUMDB: sum.golang.org
-          GONOSUMDB: ""
-
       - name: Verify module checksums
         run: go mod verify
-        env:
-          GOPROXY: https://proxy.golang.org,direct
-          GOSUMDB: sum.golang.org
-          GONOSUMDB: ""
-
       - name: Build
         run: go build ./...
-
-      - name: Run tests
-        run: go test ./... -v -race
-
-      - name: Run tests with coverage
-        run: go test ./... -coverprofile=coverage.out -covermode=atomic
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-        if: github.event_name == 'push'
+      - name: Vet
+        run: go vet ./...
+      - name: Run tests with race detection and coverage
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: go test -p=4 -parallel=4 -race -coverprofile=coverage.out -covermode=atomic -timeout=10m ./...
+      - name: Critical user journeys
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: go test ./core/ -run TestCUJ -timeout=5m
+      - name: Upload coverage
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          files: ./coverage.out
-          fail_ci_if_error: false
+          name: coverage
+          path: coverage.out
+          if-no-files-found: error
+          retention-days: 14
 
   smoke-test:
     runs-on: ubuntu-latest
-    needs: unit-test
-
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version-file: 'go.mod'
-          cache: true
-
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
       - name: Run smoke tests
-        run: go test -v -tags=smoke,no_web ./tests/e2e/...
+        run: go test -tags=smoke,no_web -timeout=5m ./tests/e2e/...
 
   regression-test:
     runs-on: ubuntu-latest
-    needs: smoke-test
-
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version-file: 'go.mod'
-          cache: true
-
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
       - name: Run regression tests
-        run: go test -v -tags=regression,no_web ./tests/e2e/...
+        run: go test -tags=regression,no_web -timeout=5m ./tests/e2e/...
 
   performance-test:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    needs: regression-test
-
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          go-version-file: 'go.mod'
-          cache: true
-
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
       - name: Run performance benchmarks
-        run: go test -bench=. -benchmem -tags=performance,no_web ./tests/performance/...
+        run: go test -run '^$' -bench=. -benchmem -tags=performance,no_web ./tests/performance/...
+
+  ci:
+    name: CI passed
+    if: always()
+    needs: [workflow-lint, web, lint, unit-test, smoke-test, regression-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every check to pass
+        env:
+          RESULTS: ${{ join(needs.*.result, ',') }}
+        run: test "$RESULTS" = 'success,success,success,success,success,success'

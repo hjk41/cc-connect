@@ -7,14 +7,14 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report a bug! Please fill out the form below to help us understand and reproduce the issue.
+        Thanks for reporting a bug in the hjk41/cc-connect fork! English and Chinese are welcome. Redact tokens, keys, and private messages from all logs and configuration.
 
   - type: input
     id: version
     attributes:
       label: cc-connect Version
-      description: Run `cc-connect --version` to get the version.
-      placeholder: "e.g. v0.3.0"
+      description: Run `cc-connect --version`; for source builds, also include `git rev-parse --short HEAD`.
+      placeholder: "e.g. v1.5.1-fork.1 or a main commit hash"
     validations:
       required: true
 
@@ -27,6 +27,7 @@ body:
         - Linux (Ubuntu/Debian)
         - Linux (Other)
         - Windows (WSL)
+        - Windows (native)
         - Other
     validations:
       required: true
@@ -40,6 +41,8 @@ body:
         - Claude Code
         - Codex (OpenAI)
         - Cursor Agent
+        - Devin (ACP)
+        - DeepSeek Harness (dsh)
         - Gemini CLI
         - Other
     validations:
@@ -69,9 +72,10 @@ body:
     attributes:
       label: Installation Method
       options:
-        - npm (npm install -g cc-connect)
-        - Binary download (GitHub Releases)
-        - Build from source
+        - This fork built from source
+        - This fork's GitHub Release
+        - Upstream npm / Homebrew / binary
+        - Other
     validations:
       required: false
 

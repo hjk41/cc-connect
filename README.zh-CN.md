@@ -3,29 +3,20 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/chenhg5/cc-connect/actions/workflows/ci.yml">
-    <img src="https://github.com/chenhg5/cc-connect/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/ci.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/ci.yml/badge.svg" alt="CI Status"/>
   </a>
-  <a href="https://github.com/chenhg5/cc-connect/releases">
-    <img src="https://img.shields.io/github/v/release/chenhg5/cc-connect?include_prereleases" alt="Release"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"/>
   </a>
-  <a href="https://www.npmjs.com/package/cc-connect">
-    <img src="https://img.shields.io/npm/dm/cc-connect?logo=npm" alt="npm downloads"/>
+  <a href="https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml">
+    <img src="https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml/badge.svg" alt="Upstream Sync"/>
   </a>
-  <a href="https://github.com/chenhg5/cc-connect/blob/main/LICENSE">
+  <a href="./LICENSE">
     <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License"/>
   </a>
-  <a href="https://goreportcard.com/report/github.com/chenhg5/cc-connect">
-    <img src="https://goreportcard.com/badge/github.com/chenhg5/cc-connect" alt="Go Report Card"/>
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/kHpwgaM4kq">
-    <img src="https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white" alt="Discord"/>
-  </a>
-  <a href="https://t.me/+odGNDhCjbjdmMmZl">
-    <img src="https://img.shields.io/badge/Telegram-Group-26A5E4?logo=telegram&logoColor=white" alt="Telegram"/>
+  <a href="./CONTRIBUTING.md">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg" alt="PRs welcome"/>
   </a>
 </p>
 
@@ -33,18 +24,32 @@
   <a href="./README.md">English</a> | <a href="./README.zh-CN.md">中文</a>
 </p>
 
-<p align="center">
-  <a href="https://trendshift.io/repositories/23266" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/23266" alt="chenhg5/cc-connect | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
-  </a>
-</p>
+# CC-Connect：持续维护的 Fork
 
+这里是 **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)**，基于 **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)** 独立维护的 fork。感谢原作者和社区为 cc-connect 打下的基础。
 
-## ❤️ 赞助
+我们重点改进 **Codex、Cursor、Devin 和 DeepSeek Harness（dsh）** 的日常使用体验。上游贡献的合并需要时间，因此我们会持续维护这个 fork，让这些改进更早可用，并继续跟进上游开发。
+
+| 方向 | 本 fork 的改进 |
+|------|----------------|
+| Codex 与通用流式输出 | 合并思考过程增量、替换工具输出快照以减少重复内容，以及更稳健的进度卡片。 |
+| Cursor | 模型与推理强度切换、完整会话历史，以及更可靠的会话恢复和任务取消。[详细说明](docs/cursor-parity.md)。 |
+| Devin | ACP 模型与推理强度切换、会话管理、记忆、技能和上下文压缩。 |
+| DeepSeek Harness（dsh） | 专用 ACP 适配器，支持模型和 Provider 切换、推理强度、会话历史、权限模式与余额查询。[能力与限制](docs/dsh-parity.md)。 |
+
+我们计划**每天检查并合并 `upstream/main`**；合入前会处理冲突并通过检查。[每日上游同步工作流](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml) 会创建或更新同步 PR，由维护者审核合并。适合通用场景的改进也会尽可能回馈上游。
+
+**欢迎 Issue 和 PR**，也欢迎改进其他 Agent 或平台。请在[本 fork 的 Issues](https://github.com/hjk41/cc-connect/issues) 中反馈，PR 请以 `hjk41/cc-connect:main` 为目标分支。参与方式见 [CONTRIBUTING.md](CONTRIBUTING.md)，另有[安全反馈](SECURITY.md)和[维护指南](docs/maintaining.md)。
+
+**请按下文从源码安装本 fork**，或在[本 fork 的 Releases](https://github.com/hjk41/cc-connect/releases) 有可用产物后下载。现有的 `cc-connect` npm 包、Homebrew formula 和内置 `cc-connect update` 目前仍使用上游分发渠道。
+
+## ❤️ 上游赞助商
+
+以下赞助与联系方式属于上游项目。
 
 > 想在这里展示？联系：chg80333@gmail.com | 微信：mongorz
 
-<details open>
+<details>
 <summary>赞助商</summary>
 
 [![Kimi](https://gcdn.moonshot.cn/growth-cdn/sponsor/kimi-zh.png)](https://www.kimi.com/code/?aff=cc-connect)
@@ -192,7 +197,7 @@ cc-connect 已支持 Kimi CLI。立即体验 **Kimi Code 订阅**（[中文站](
 </p>
 
 
-## 🆕 v1.5.1-beta.1 更新了什么
+## 🆕 上游 v1.5.1-beta.1 更新亮点
 
 自 v1.5.0 正式版以来的 beta —— 16 个已合并 PR。亮点：
 
@@ -329,15 +334,19 @@ codex login            # / gemini / opencode 等也类似，请参考各自文�
 
 ### 3️⃣ 安装 cc-connect
 
+需要 Go 1.25 或更新版本，以及用于构建 Web UI 的 Node.js 24、pnpm 10。
+
 ```bash
-# npm（任意平台）
-npm install -g cc-connect
-
-# Homebrew（macOS / Linux）
-brew install cc-connect
-
-# 也可以从 https://github.com/chenhg5/cc-connect/releases 直接下载二进制
+git clone https://github.com/hjk41/cc-connect.git
+cd cc-connect
+pnpm --dir web install --frozen-lockfile
+make build
+mkdir -p "$HOME/.local/bin"
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
+export PATH="$HOME/.local/bin:$PATH"
 ```
+
+请在 shell 配置中保留 `~/.local/bin` 的 `PATH` 设置。Windows 用户可使用本 fork 的 Release，或在安装了 Go、Node.js、pnpm 和 Make 的 Git Bash 环境中编译。
 
 ### 4️⃣ 启动 cc-connect 并打开 Web UI
 
@@ -370,42 +379,22 @@ Web admin:  http://localhost:9820
 > **最简单的方式** — 把这段话发给 Claude Code 或其他 AI 编码 Agent，它会帮你完成整个安装和配置过程：
 
 ```bash
-请参考 https://raw.githubusercontent.com/chenhg5/cc-connect/refs/heads/main/INSTALL.md 帮我安装和配置 cc-connect
+请参考 https://raw.githubusercontent.com/hjk41/cc-connect/refs/heads/main/INSTALL.md 帮我从源码安装和配置 hjk41/cc-connect 这个 fork
 ```
 
 
 ### 📦 手动安装
 
-**通过 npm：**
+**从本 fork 源码编译（Go 1.25+、Node.js 24、pnpm 10）：**
 
 ```bash
-# npm install -g cc-connect
-```
-
-**通过 Homebrew（macOS / Linux）：**
-
-```bash
-brew install cc-connect
-```
-
-**从 [GitHub Releases](https://github.com/chenhg5/cc-connect/releases) 下载：**
-
-```bash
-# Linux amd64 - 稳定版
-curl -L -o cc-connect https://github.com/chenhg5/cc-connect/releases/latest/download/cc-connect-linux-amd64
-chmod +x cc-connect
-sudo mv cc-connect /usr/local/bin/
-
-```
-
-**从源码编译（需要 Go 1.22+）：**
-
-```bash
-git clone https://github.com/chenhg5/cc-connect.git
+git clone https://github.com/hjk41/cc-connect.git
 cd cc-connect
+pnpm --dir web install --frozen-lockfile
 make build
 ```
 
+生成的二进制为 `./cc-connect`。也可以在[本 fork 的 Releases](https://github.com/hjk41/cc-connect/releases) 有产物后，下载并解压对应操作系统和架构的文件，再使用随附的 `checksums.txt` 校验。
 
 ### ⚙️ 配置
 
@@ -433,17 +422,14 @@ vim ~/.cc-connect/config.toml
 ### 🔄 升级
 
 ```bash
-# npm
-npm install -g cc-connect
-
-# Homebrew
-brew upgrade cc-connect
-
-# 二进制自更新
-cc-connect update           # 稳定版
-cc-connect update --pre     # 含预发布版本
+cd cc-connect
+git pull --ff-only origin main
+pnpm --dir web install --frozen-lockfile
+make build
+install -m 755 cc-connect "$HOME/.local/bin/cc-connect"
 ```
 
+升级后请重启服务。通过二进制安装的用户请使用本 fork 的新 Release。内置自更新目前下载的是上游构建，请使用上述方式保留 fork 改进。
 
 ## 📊 支持状态
 
@@ -639,15 +625,20 @@ cc-connect send --tts "你好"
 - [INSTALL.md](INSTALL.md) — AI Agent 友好的安装指南
 - [config.example.toml](config.example.toml) — 配置模板
 - [CONTRIBUTING.md](CONTRIBUTING.md) — Issue / PR 提交流程与贡献说明
+- [维护指南](docs/maintaining.md) — CI、上游同步和 fork 发版
+- [安全策略](SECURITY.md) — 私密漏洞反馈
 
 
-## 👥 社区
+## 👥 社区与贡献
 
-- [Discord](https://discord.gg/kHpwgaM4kq)
-- [Telegram](https://t.me/+odGNDhCjbjdmMmZl)
+- [本 fork 的 Issues](https://github.com/hjk41/cc-connect/issues) — Bug、问题与功能建议
+- [本 fork 的 Pull Requests](https://github.com/hjk41/cc-connect/pulls) — 欢迎参与改进
+- 上游社区：[Discord](https://discord.gg/kHpwgaM4kq)、[Telegram](https://t.me/+odGNDhCjbjdmMmZl)
 
 
-## ☕ 支持项目
+## ☕ 支持上游项目
+
+本节中的捐赠链接与致谢属于原项目维护者。
 
 如果 cc-connect 对你有帮助，请考虑请我们喝杯咖啡！你的支持帮助我们：
 
@@ -676,7 +667,9 @@ cc-connect send --tts "你好"
 | <img src="https://avatars.githubusercontent.com/u/1762560?v=4" width="40" height="40" style="border-radius: 50%;"> | [@thx0701](https://github.com/thx0701) | 2026-04-29 |
 
 
-## 🤝 商业合作
+## 🤝 上游商业合作
+
+以下联系方式属于上游项目。
 
 我们接受以下商业合作：
 
@@ -689,25 +682,12 @@ cc-connect send --tts "你好"
 
 ## 🙏 贡献者
 
-<a href="https://github.com/chenhg5/cc-connect/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=chenhg5/cc-connect&v=20250313" />
-</a>
-
-
-## ⭐ Star History
-
-<a href="https://www.star-history.com/#chenhg5/cc-connect&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=chenhg5/cc-connect&type=Date" />
- </picture>
-</a>
+感谢[本 fork 的贡献者](https://github.com/hjk41/cc-connect/graphs/contributors)，以及为项目打下基础的[上游贡献者](https://github.com/chenhg5/cc-connect/graphs/contributors)。
 
 
 ## 📄 License
 
-MIT License
+[MIT License](LICENSE)
 
 
 <p align="center">
