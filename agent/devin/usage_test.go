@@ -147,11 +147,13 @@ func (f devinUsageRoundTripper) RoundTrip(r *http.Request) (*http.Response, erro
 
 func setupDevinUsage(t *testing.T) {
 	t.Helper()
-	oldClient, oldVersion, oldHome := devinUsageClient, devinUsageProtocolVersion, devinUsageHomeDir
+	oldClient, oldVersion, oldHome := devinUsageClient, devinUsageVersionRunner, devinUsageHomeDir
 	t.Cleanup(func() {
-		devinUsageClient, devinUsageProtocolVersion, devinUsageHomeDir = oldClient, oldVersion, oldHome
+		devinUsageClient, devinUsageVersionRunner, devinUsageHomeDir = oldClient, oldVersion, oldHome
 	})
-	devinUsageProtocolVersion = "test-version"
+	devinUsageVersionRunner = func(context.Context, string, []string) (string, error) {
+		return "test-version", nil
+	}
 	home := t.TempDir()
 	devinUsageHomeDir = func() (string, error) { return home, nil }
 	t.Setenv("AGENT_METER_DEVIN_CREDENTIALS", writeUsageCredentials(t, "windsurf_api_key = 'devin-test-secret'\napi_server_url = 'https://devin.example'\n"))
@@ -244,5 +246,41 @@ func TestParseDevinUsageIdentity(t *testing.T) {
 	}
 	if report.Email != "dev@example.com" || report.Plan != "Max" {
 		t.Fatalf("identity = %q / %q", report.Email, report.Plan)
+	}
+}
+
+func TestParseDevinVersion(t *testing.T) {
+	for _, tc := range []struct{ out, want string }{
+		{"devin 3000.11.3 (9c803229faa4)\n", "3000.11.3"},
+		{"3000.11.3", "3000.11.3"},
+		{"devin 3000.11.3-rc.1 (abc)", "3000.11.3-rc.1"},
+	} {
+		got, err := parseDevinVersion(tc.out)
+		if err != nil || got != tc.want {
+			t.Fatalf("%q: %q %v", tc.out, got, err)
+		}
+	}
+	for _, out := range []string{"", "devin", "devin nightly", "not a version"} {
+		if _, err := parseDevinVersion(out); err == nil {
+			t.Fatalf("accepted %q", out)
+		}
+	}
+}
+
+func TestDevinUsageRequiresCLIVersion(t *testing.T) {
+	setupDevinUsage(t)
+	devinUsageVersionRunner = func(context.Context, string, []string) (string, error) {
+		return "", errors.New("version unavailable")
+	}
+	_, err := (&Agent{}).GetUsage(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "cannot determine CLI version") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseDevinVersionEmbedded(t *testing.T) {
+	got, err := parseDevinVersion("devin nightly build 3001.2.3-rc.1 (abc)")
+	if err != nil || got != "3001.2.3-rc.1" {
+		t.Fatalf("got %q, %v", got, err)
 	}
 }

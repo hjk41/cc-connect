@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -23,8 +25,43 @@ import (
 
 var _ core.UsageReporter = (*Agent)(nil)
 
-var devinUsageProtocolVersion = "3000.11.92"
 var devinUsageHomeDir = os.UserHomeDir
+
+// devinUsageVersionRunner is replaceable in tests. Production runs the real
+// Devin CLI's `version` command so the SeatManagement client metadata always
+// matches the installed binary instead of a hardcoded protocol version.
+var devinUsageVersionRunner = func(ctx context.Context, binary string, env []string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "version")
+	if len(env) > 0 {
+		cmd.Env = env
+	}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return parseDevinVersion(string(out))
+}
+
+func parseDevinVersion(out string) (string, error) {
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) >= 2 && fields[0] == "devin" {
+		if match := versionPattern.FindString(fields[1]); match == fields[1] {
+			return match, nil
+		}
+	}
+	if match := versionPattern.FindString(strings.TrimSpace(out)); match != "" {
+		return match, nil
+	}
+	return "", fmt.Errorf("devin: cannot parse CLI version output")
+}
+
+var versionPattern = regexp.MustCompile(`[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?`)
 var devinUsageClient = &http.Client{
 	Timeout:       45 * time.Second,
 	Transport:     &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 15 * time.Second}).DialContext, TLSHandshakeTimeout: 15 * time.Second},
@@ -95,9 +132,13 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	version, err := devinUsageVersionRunner(ctx, a.modelsBinary(), a.modelsEnv())
+	if err != nil {
+		return nil, fmt.Errorf("devin: cannot determine CLI version; run devin version")
+	}
 	body, _ := json.Marshal(map[string]any{"metadata": map[string]string{
-		"apiKey": creds.APIKey, "ideName": "devin-cli", "ideType": "chisel", "ideVersion": devinUsageProtocolVersion,
-		"extensionName": "chisel", "extensionVersion": devinUsageProtocolVersion, "locale": "en", "os": runtime.GOOS,
+		"apiKey": creds.APIKey, "ideName": "devin-cli", "ideType": "chisel", "ideVersion": version,
+		"extensionName": "chisel", "extensionVersion": version, "locale": "en", "os": runtime.GOOS,
 	}})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, creds.Server+"/exa.seat_management_pb.SeatManagementService/GetUserStatus", bytes.NewReader(body))
 	if err != nil {
