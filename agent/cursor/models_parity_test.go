@@ -161,7 +161,7 @@ func TestNew_ReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "agent")
 	body := "#!/bin/sh\nprintf '%s\\n' 'auto - Auto' 'grok-4.7 - Grok 4.7' 'grok-4.7-high - Grok 4.7 High'\n"
-	script = testutil.Shell(t, script, body)
+	testutil.Shell(t, script, body)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	ag, err := New(map[string]any{
 		"cmd":              "agent",

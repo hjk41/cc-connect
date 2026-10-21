@@ -1074,14 +1074,26 @@ func TestClose_ForceKillsProcessStillRunningAfterTurnCompleted(t *testing.T) {
 	waitForThreadID(t, cs, "thread-overlap")
 	waitForDoneResult(t, cs.Events())
 
-	if err := cs.Send("second", "", nil, nil); err == nil || !strings.Contains(err.Error(), "turn already in progress") {
-		t.Fatalf("Send(second) error = %v, want turn already in progress", err)
+	waiting := make(chan error, 1)
+	go func() { waiting <- cs.Send("second", "", nil, nil) }()
+	select {
+	case err := <-waiting:
+		t.Fatalf("next turn must wait for old process, got %v", err)
+	case <-time.After(50 * time.Millisecond):
 	}
 	waitForFileLines(t, startsFile, 1)
 
 	closeStarted := time.Now()
 	if err := cs.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case err := <-waiting:
+		if err == nil {
+			t.Fatal("waiting Send started after Close")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not cancel waiting Send")
 	}
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force killing tracked process: %v", elapsed)
@@ -1153,4 +1165,46 @@ func waitForFileLines(t *testing.T, path string, want int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d lines in %s", want, path)
+}
+
+func TestSend_AfterResultWaitsForPreviousProcessExit(t *testing.T) {
+	work := t.TempDir()
+	bin := t.TempDir()
+	release := filepath.Join(work, "release")
+	writeFakeCodexScript(t, bin, `#!/bin/sh
+printf '%s\n' '{"type":"turn.completed"}'
+while [ ! -f "$CODEX_RELEASE_FILE" ]; do sleep 0.01; done
+`, `[Console]::Out.WriteLine('{"type":"turn.completed"}')
+while (-not (Test-Path $env:CODEX_RELEASE_FILE)) { Start-Sleep -Milliseconds 10 }
+`)
+	t.Setenv("CODEX_RELEASE_FILE", release)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cs, err := newCodexSession(context.Background(), "codex", nil, work, "", "", "", "", "", nil, "", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	if err := cs.Send("first", "", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	waitForDoneResult(t, cs.Events())
+	sent := make(chan error, 1)
+	go func() { sent <- cs.Send("second", "", nil, nil) }()
+	select {
+	case err := <-sent:
+		t.Fatalf("next turn must wait for process exit, got %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-sent:
+		if err != nil {
+			t.Fatalf("Send after visible result: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("next turn did not start after prior process exited")
+	}
+	waitForDoneResult(t, cs.Events())
 }

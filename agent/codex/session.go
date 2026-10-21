@@ -41,9 +41,13 @@ type codexSession struct {
 	wg             sync.WaitGroup
 	alive          atomic.Bool
 	turnInFlight   atomic.Bool
-	closeOnce      sync.Once
-	cmdMu          sync.Mutex
-	cmds           map[*exec.Cmd]struct{}
+	turnMu         sync.Mutex
+	turnTerminal   bool
+	// turnExited is protected by turnMu and closed only by releaseTurn.
+	turnExited chan struct{}
+	closeOnce  sync.Once
+	cmdMu      sync.Mutex
+	cmds       map[*exec.Cmd]struct{}
 
 	pendingMsgs []string // buffered agent_message texts awaiting classification
 
@@ -116,6 +120,53 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 	return cs, nil
 }
 
+// acquireTurn rejects concurrent prompts while a turn is running. After a
+// terminal event, wait for the old CLI to release its transcript writer lock
+// before starting resume; the visible result can precede process exit.
+func (cs *codexSession) acquireTurn() error {
+	for {
+		cs.turnMu.Lock()
+		if !cs.alive.Load() || cs.ctx.Err() != nil {
+			cs.turnMu.Unlock()
+			return fmt.Errorf("session is closed")
+		}
+		if !cs.turnInFlight.Load() {
+			cs.turnInFlight.Store(true)
+			cs.turnTerminal = false
+			cs.turnExited = make(chan struct{})
+			cs.turnMu.Unlock()
+			return nil
+		}
+		if !cs.turnTerminal {
+			cs.turnMu.Unlock()
+			return fmt.Errorf("codex session turn already in progress")
+		}
+		exited := cs.turnExited
+		cs.turnMu.Unlock()
+		select {
+		case <-exited:
+		case <-cs.ctx.Done():
+			return fmt.Errorf("codex session closed while waiting for previous turn: %w", cs.ctx.Err())
+		}
+	}
+}
+
+func (cs *codexSession) releaseTurn() {
+	cs.turnMu.Lock()
+	defer cs.turnMu.Unlock()
+	cs.turnInFlight.Store(false)
+	if cs.turnExited != nil {
+		close(cs.turnExited)
+		cs.turnExited = nil
+	}
+}
+
+func (cs *codexSession) markTurnTerminal() {
+	cs.turnMu.Lock()
+	cs.turnTerminal = true
+	cs.turnMu.Unlock()
+}
+
 // Send launches a codex subprocess.
 // If a threadID exists (from a prior turn or resume), uses `codex exec resume <id> <prompt>`.
 // Otherwise uses `codex exec <prompt>` to start a new conversation.
@@ -123,15 +174,15 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 	if !cs.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
-	if !cs.turnInFlight.CompareAndSwap(false, true) {
-		return fmt.Errorf("codex session turn already in progress")
+	if err := cs.acquireTurn(); err != nil {
+		return err
 	}
 	// The deferred cleanup reads started when Send returns, so setup failures
 	// release the guard while a launched process keeps it until readLoop exits.
 	started := false
 	defer func() {
 		if !started {
-			cs.turnInFlight.Store(false)
+			cs.releaseTurn()
 		}
 	}()
 
@@ -322,12 +373,13 @@ func codexImageExt(mime string) string {
 func (cs *codexSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf *bytes.Buffer) {
 	defer cs.wg.Done()
 	defer func() {
-		defer cs.turnInFlight.Store(false)
+		defer cs.releaseTurn()
 		defer cs.removeCmd(cmd)
 		if err := cmd.Wait(); err != nil {
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
 			if stderrMsg != "" {
 				slog.Error("codexSession: process failed", "error", err, "stderr", stderrMsg)
+				cs.markTurnTerminal()
 				evt := core.Event{Type: core.EventError, Error: fmt.Errorf("%s", stderrMsg)}
 				select {
 				case cs.events <- evt:
@@ -359,6 +411,7 @@ func (cs *codexSession) readLoop(cmd *exec.Cmd, stdout io.ReadCloser, stderrBuf 
 		return nil
 	}); err != nil {
 		slog.Error("codexSession: read stdout error", "error", err)
+		cs.markTurnTerminal()
 		evt := core.Event{Type: core.EventError, Error: fmt.Errorf("read stdout: %w", err)}
 		select {
 		case cs.events <- evt:
@@ -427,6 +480,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		cs.handleItemCompleted(raw)
 
 	case "turn.completed":
+		cs.markTurnTerminal()
 		cs.refreshContextUsageFromRollout()
 		cs.flushPendingAsText()
 		evt := core.Event{Type: core.EventResult, SessionID: cs.CurrentSessionID(), Done: true}
@@ -437,6 +491,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		}
 
 	case "turn.failed":
+		cs.markTurnTerminal()
 		errMsg := ""
 		if errObj, ok := raw["error"].(map[string]any); ok {
 			errMsg, _ = errObj["message"].(string)
