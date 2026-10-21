@@ -36,3 +36,10 @@ func sameCwd(a, b string) bool {
 	}
 	return strings.EqualFold(canonicalCwd(a), canonicalCwd(b))
 }
+
+// CanonicalCwd resolves a workspace path the same way session cwd filters do.
+func CanonicalCwd(path string) string { return canonicalCwd(path) }
+
+// SameCwd reports whether two directories are the same location after
+// symlink resolution.
+func SameCwd(a, b string) bool { return sameCwd(a, b) }

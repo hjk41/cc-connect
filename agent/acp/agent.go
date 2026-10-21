@@ -83,6 +83,23 @@ type Agent struct {
 	// name (e.g. "Claude Opus 5.5") for the reply footer instead of its id.
 	ShowModelDisplayName bool
 
+	// SpawnEnv, when set, returns extra KEY=VALUE pairs applied to every
+	// child process (sessions and probes). Pairs are prepended so they
+	// override the configured env. Wrappers use it for settings the agent
+	// only reads at process start.
+	SpawnEnv func() []string
+
+	// BeforeResume, when set, runs before the child process is spawned
+	// when StartSession is asked to resume a known session id. A nil hook
+	// is a no-op. A returned error is recorded as a startup warning and
+	// does not abort the session. Empty ids and the continue sentinel skip
+	// the hook.
+	BeforeResume func(ctx context.Context, sessionID string) error
+
+	// promptPrefix is prepended to the first prompt of a newly created
+	// session. Resumed sessions are left unchanged. Empty disables it.
+	promptPrefix string
+
 	// reasoningEffort is the configured effort applied to future
 	// sessions. It is not the thought_level the last session reported.
 	reasoningEffort string
@@ -360,11 +377,25 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	compactionNotify := a.CompactionNotifyMethod
 	showModelName := a.ShowModelDisplayName
 	pendingAliases := cloneModeAliases(a.modeAliases)
+	prefix := a.promptPrefix
 	extra := append([]string(nil), a.extraEnv...)
 	extra = append(extra, a.sessionEnv...)
+	spawnEnv := a.SpawnEnv
+	beforeResume := a.BeforeResume
 	a.mu.RUnlock()
+	if spawnEnv != nil {
+		extra = append(append([]string(nil), spawnEnv()...), extra...)
+	}
+	resumeWarn := ""
+	resumeID := strings.TrimSpace(sessionID)
+	if beforeResume != nil && resumeID != "" && resumeID != core.ContinueSession {
+		if err := beforeResume(ctx, resumeID); err != nil {
+			resumeWarn = strings.TrimSpace(err.Error())
+			slog.Warn("acp: resume hook failed", "session_id", resumeID, "error", err)
+		}
+	}
 
-	return newACPSession(ctx, acpSessionConfig{
+	sess, err := newACPSession(ctx, acpSessionConfig{
 		command:                command,
 		args:                   allArgs,
 		extraEnv:               extra,
@@ -379,8 +410,28 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 		compactionNotifyMethod: compactionNotify,
 		showModelName:          showModelName,
 		modeAliases:            pendingAliases,
+		promptPrefix:           prefix,
 		callbacks:              a,
 	})
+	if err != nil {
+		return nil, err
+	}
+	if resumeWarn != "" {
+		sess.addStartupWarning(resumeWarn)
+	}
+	return sess, nil
+}
+
+// SetPromptPrefix stores text prepended to the first prompt of a session
+// created with session/new. Empty clears it. Resumed sessions do not
+// receive the prefix.
+func (a *Agent) SetPromptPrefix(prefix string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.promptPrefix = strings.TrimSpace(prefix)
+	a.mu.Unlock()
 }
 
 func (a *Agent) Stop() error { return nil }

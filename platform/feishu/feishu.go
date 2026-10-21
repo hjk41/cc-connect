@@ -6392,6 +6392,13 @@ func extractToolDetailFromSummary(text string, desc toolDescriptor) string {
 				return strings.TrimSpace(match[1])
 			}
 		}
+		// A shell command often contains quotes or backticks
+		// (`echo "---"`, `echo "exit code: $?"`). Those spans are
+		// arguments, not a summary of the command. Keep the original
+		// text so the card shows the full command.
+		if desc.Sanitizer == toolSanitizerCommand {
+			return text
+		}
 		if code := extractFirstCodeSpan(line); code != "" {
 			return code
 		}

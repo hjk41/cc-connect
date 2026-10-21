@@ -294,6 +294,18 @@ func TestSummarizeACPToolInput(t *testing.T) {
 			want: "echo hello",
 		},
 		{
+			name: "bash command stays on the first line",
+			kind: "bash",
+			raw:  `{"description":"Create directory in home folder","command":"mkdir -p ~/demo","workdir":"/tmp"}`,
+			want: "mkdir -p ~/demo\n# Create directory in home folder",
+		},
+		{
+			name: "command before description for an unknown kind",
+			kind: "other",
+			raw:  `{"description":"note","command":"touch out.txt"}`,
+			want: "touch out.txt\n# note",
+		},
+		{
 			name: "read file",
 			kind: "read",
 			raw:  `{"file_path": "/tmp/test.txt"}`,

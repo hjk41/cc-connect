@@ -5253,7 +5253,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		}
 	}
 	sp := newStreamPreview(e.streamPreview, state.platform, state.replyCtx, e.ctx, workspaceRenderer)
-	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer)
+	cp := newCompactProgressWriter(e.ctx, state.platform, state.replyCtx, userVisibleAgentName(e.agent), e.i18n.CurrentLang(), workspaceRenderer)
 	state.mu.Unlock()
 
 	// Send instant confirmation reply if enabled and no streaming card is active.
@@ -6484,7 +6484,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					return e.renderOutgoingContentForWorkspace(queued.platform, content, workspaceDir)
 				}
 				sp = newStreamPreview(e.streamPreview, queued.platform, queued.replyCtx, e.ctx, queuedRenderer)
-				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, e.agent.Name(), e.i18n.CurrentLang(), queuedRenderer)
+				cp = newCompactProgressWriter(e.ctx, queued.platform, queued.replyCtx, userVisibleAgentName(e.agent), e.i18n.CurrentLang(), queuedRenderer)
 
 				// Reset streaming card state for the next turn
 				streamCard = nil
@@ -7509,7 +7509,7 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 			end = total
 		}
 
-		agentName := agent.Name()
+		agentName := userVisibleAgentName(agent)
 		activeSession := sessions.GetOrCreateActive(msg.SessionKey)
 		activeAgentID := activeSession.GetAgentSessionID()
 
@@ -9210,8 +9210,24 @@ func formatUsageReport(report *UsageReport, lang Language) string {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(usageAccountLabel(lang))
-	sb.WriteString(accountDisplay(report))
+	wrote := false
+	if hasAccountIdentity(report) {
+		sb.WriteString(usageAccountLabel(lang))
+		sb.WriteString(accountDisplay(report))
+		wrote = true
+	}
+	if balance := creditBalance(report); balance != "" {
+		if wrote {
+			sb.WriteString("\n")
+		}
+		sb.WriteString(usageBalanceLabel(lang))
+		sb.WriteString(balanceDisplay(report, balance))
+		wrote = true
+	}
+	if !wrote {
+		sb.WriteString(usageAccountLabel(lang))
+		sb.WriteString(accountDisplay(report))
+	}
 	sb.WriteString(formatUsageBlocks(report, lang))
 
 	return strings.TrimSpace(sb.String())
@@ -9230,6 +9246,33 @@ func formatUsageBlocks(report *UsageReport, lang Language) string {
 		return ""
 	}
 	return "\n\n" + strings.Join(sections, "\n\n")
+}
+
+func hasAccountIdentity(report *UsageReport) bool {
+	if report == nil {
+		return false
+	}
+	if strings.TrimSpace(report.Email) != "" || strings.TrimSpace(report.UserID) != "" {
+		return true
+	}
+	id := strings.TrimSpace(report.AccountID)
+	return id != "" && id != "-"
+}
+
+func creditBalance(report *UsageReport) string {
+	if report == nil || report.Credits == nil {
+		return ""
+	}
+	return strings.TrimSpace(report.Credits.Balance)
+}
+
+// balanceDisplay keeps a plan suffix when the report has no account identity,
+// because that suffix would otherwise only appear on the account line.
+func balanceDisplay(report *UsageReport, balance string) string {
+	if hasAccountIdentity(report) || strings.TrimSpace(report.Plan) == "" {
+		return balance
+	}
+	return fmt.Sprintf("%s (%s)", balance, strings.TrimSpace(report.Plan))
 }
 
 func accountDisplay(report *UsageReport) string {
@@ -9340,6 +9383,21 @@ func usageAccountLabel(lang Language) string {
 		return "Cuenta: "
 	default:
 		return "Account: "
+	}
+}
+
+func usageBalanceLabel(lang Language) string {
+	switch lang {
+	case LangChinese:
+		return "余额："
+	case LangTraditionalChinese:
+		return "餘額："
+	case LangJapanese:
+		return "残高: "
+	case LangSpanish:
+		return "Saldo: "
+	default:
+		return "Balance: "
 	}
 }
 
@@ -9491,7 +9549,7 @@ func (e *Engine) renderListCardSafe(sessionKey string, page int) *Card {
 	card, err := e.renderListCard(sessionKey, page)
 	if err != nil {
 		agent, _ := e.sessionContextForKey(sessionKey)
-		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, agent.Name(), 0), "red", err.Error())
+		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, userVisibleAgentName(agent), 0), "red", err.Error())
 	}
 	return card
 }
@@ -10463,18 +10521,63 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 	}
 
 	switcher.SetReasoningEffort(target)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-
-	s := sessions.GetOrCreateActive(msg.SessionKey)
-	s.SetAgentSessionID("", "")
-	s.ClearHistory()
-	sessions.Save()
-
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgReasoningChanged, target))
+	effort := strings.TrimSpace(switcher.GetReasoningEffort())
+	if effort == "" {
+		effort = target
+	}
+	appliedLive := e.applyReasoningSelection(msg.SessionKey, sessions, agent, effort)
+	e.reply(p, msg.ReplyCtx, e.reasoningChangedText(agent, effort, appliedLive))
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
 	return e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|"))
+}
+
+// applyReasoningSelection stores a reasoning effort the caller already set on
+// the agent, then applies it to the current conversation when the agent can.
+// A running session that accepts the change is left in place. Otherwise the
+// process is restarted. Agents that apply the effort when the same
+// conversation resumes keep their saved session id; agents that only honor
+// it on a brand-new session have that id and history cleared.
+// appliedLive reports whether the running session accepted the change.
+func (e *Engine) applyReasoningSelection(sessionKey string, sessions *SessionManager, agent Agent, effort string) bool {
+	if e.applyLiveReasoningChange(sessionKey, effort) {
+		return true
+	}
+	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey))
+	if applier, ok := agent.(ResumeReasoningApplier); ok && applier.AppliesReasoningOnResume() {
+		return false
+	}
+	s := sessions.GetOrCreateActive(sessionKey)
+	s.SetAgentSessionID("", "")
+	s.ClearHistory()
+	sessions.Save()
+	return false
+}
+
+func (e *Engine) applyLiveReasoningChange(sessionKey, effort string) bool {
+	iKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+	if !ok || state == nil || state.agentSession == nil || !state.agentSession.Alive() {
+		return false
+	}
+	switcher, ok := state.agentSession.(LiveReasoningSwitcher)
+	if !ok {
+		return false
+	}
+	return switcher.SetLiveReasoningEffort(effort)
+}
+
+func (e *Engine) reasoningChangedText(agent Agent, effort string, appliedLive bool) string {
+	if appliedLive {
+		return e.i18n.Tf(MsgReasoningChangedLive, effort)
+	}
+	if applier, ok := agent.(ResumeReasoningApplier); ok && applier.AppliesReasoningOnResume() {
+		return e.i18n.Tf(MsgReasoningChangedOnResume, effort)
+	}
+	return e.i18n.Tf(MsgReasoningChanged, effort)
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
@@ -10558,7 +10661,13 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 			break
 		}
 	}
-	reply := fmt.Sprintf(e.i18n.T(MsgModeChanged), displayName)
+	replyKey := MsgModeChanged
+	if !appliedLive {
+		if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
+			replyKey = MsgModeChangedOnResume
+		}
+	}
+	reply := fmt.Sprintf(e.i18n.T(replyKey), displayName)
 	if appliedLive {
 		reply += "\n\n(Current session updated immediately.)"
 	}
@@ -12788,11 +12897,11 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		for _, effort := range efforts {
 			if effort == target {
 				switcher.SetReasoningEffort(target)
-				e.cleanupInteractiveState(interactiveKey)
-				s := e.sessions.GetOrCreateActive(sessionKey)
-				s.SetAgentSessionID("", "")
-				s.ClearHistory()
-				e.sessions.Save()
+				selected := strings.TrimSpace(switcher.GetReasoningEffort())
+				if selected == "" {
+					selected = target
+				}
+				e.applyReasoningSelection(sessionKey, e.sessions, e.agent, selected)
 				return
 			}
 		}
@@ -12812,7 +12921,11 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			return
 		}
 		e.cleanupInteractiveState(interactiveKey)
-		// Mode change requires a new session to take effect
+		// Agents that apply the mode when the same conversation resumes keep
+		// the saved session id. Others need a new session.
+		if applier, ok := e.agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
+			return
+		}
 		s := e.sessions.GetOrCreateActive(sessionKey)
 		s.SetAgentSessionID("", "")
 		s.ClearHistory()
@@ -13685,7 +13798,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 	}
 	agentSessions = e.applySessionFilter(agentSessions, sessions, sessionKey)
 	if len(agentSessions) == 0 {
-		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, agent.Name(), 0), "turquoise", e.i18n.T(MsgListEmpty)), nil
+		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, userVisibleAgentName(agent), 0), "turquoise", e.i18n.T(MsgListEmpty)), nil
 	}
 
 	total := len(agentSessions)
@@ -13700,7 +13813,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 		end = total
 	}
 
-	agentName := agent.Name()
+	agentName := userVisibleAgentName(agent)
 	activeSession := sessions.GetOrCreateActive(sessionKey)
 	activeAgentID := activeSession.GetAgentSessionID()
 
@@ -16706,7 +16819,7 @@ func (e *Engine) cmdBind(p Platform, msg *Message, args []string) {
 
 	reply := fmt.Sprintf(e.i18n.T(MsgRelayBindSuccess), strings.Join(boundProjects, " ↔ "), otherProject, otherProject)
 
-	if _, ok := e.agent.(SystemPromptSupporter); !ok {
+	if !agentHasNativeSystemPrompt(e.agent) {
 		if mp, ok := e.agent.(MemoryFileProvider); ok {
 			reply += fmt.Sprintf(e.i18n.T(MsgRelaySetupHint), filepath.Base(mp.ProjectMemoryFile()))
 		}
@@ -16740,10 +16853,20 @@ const (
 	setupError                       // write error
 )
 
+// agentHasNativeSystemPrompt reports whether the agent injects the
+// cc-connect system prompt itself. Implementing SystemPromptSupporter is
+// not enough: HasSystemPromptSupport must be true. A false result keeps
+// the memory-file path so agents without a system-prompt channel still
+// receive relay and cron instructions.
+func agentHasNativeSystemPrompt(agent Agent) bool {
+	supporter, ok := agent.(SystemPromptSupporter)
+	return ok && supporter.HasSystemPromptSupport()
+}
+
 // setupMemoryFile appends AgentSystemPrompt() to the agent's project memory
 // file. It returns the result, the filename (for messages), and any error.
 func (e *Engine) setupMemoryFile() (setupResult, string, error) {
-	if _, ok := e.agent.(SystemPromptSupporter); ok {
+	if agentHasNativeSystemPrompt(e.agent) {
 		return setupNative, "", nil
 	}
 

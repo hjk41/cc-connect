@@ -50,6 +50,8 @@ type acpInitializeResult struct {
 			// treat "field present" as "supported" regardless of contents.
 			List   json.RawMessage `json:"list,omitempty"`
 			Delete json.RawMessage `json:"delete,omitempty"`
+			Resume json.RawMessage `json:"resume,omitempty"`
+			Close  json.RawMessage `json:"close,omitempty"`
 		} `json:"sessionCapabilities"`
 	} `json:"agentCapabilities"`
 }
@@ -81,7 +83,13 @@ func (a *Agent) probeSpawn(ctx context.Context, cwd string, onNotif rpcNotifyHan
 	}
 	cmd := exec.CommandContext(ctx, bin, allArgs...)
 	cmd.Dir = cwd
-	cmd.Env = core.MergeEnv(os.Environ(), a.extraEnv)
+	env := append([]string(nil), a.extraEnv...)
+	if a.SpawnEnv != nil {
+		// SpawnEnv is prepended so its keys win. MergeEnv keeps the first
+		// occurrence of a key, matching Linux getenv.
+		env = append(append([]string(nil), a.SpawnEnv()...), env...)
+	}
+	cmd.Env = core.MergeEnv(os.Environ(), env)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

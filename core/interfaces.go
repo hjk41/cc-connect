@@ -195,10 +195,11 @@ func AgentSystemPromptForLang(lang Language) string {
 		agentSystemPromptFooter
 }
 
-// SystemPromptSupporter is an optional marker interface for agents that
-// natively inject AgentSystemPrompt() (e.g., via --append-system-prompt).
-// Agents that do NOT implement this need the instructions written to their
-// memory/instruction file for relay and cron to work.
+// SystemPromptSupporter is an optional interface for agents that can inject
+// AgentSystemPrompt() natively (for example via --append-system-prompt).
+// HasSystemPromptSupport reports whether that channel is actually available.
+// A false result, and agents that do not implement the interface, get the
+// instructions written into their project memory file instead.
 type SystemPromptSupporter interface {
 	HasSystemPromptSupport() bool
 }
@@ -640,6 +641,30 @@ type WorkspaceAgentOptionSnapshotter interface {
 // apply a mode change immediately without restarting the process.
 type LiveModeSwitcher interface {
 	SetLiveMode(mode string) bool
+}
+
+// ResumeModeApplier is an optional interface for agents that apply a
+// permission-mode change to the next message of the current conversation.
+// The saved agent session id is kept, and the agent applies the mode when
+// that session is resumed. Agents that only honor the mode on a brand-new
+// session leave this interface unimplemented.
+type ResumeModeApplier interface {
+	AppliesModeOnResume() bool
+}
+
+// LiveReasoningSwitcher is an optional interface for running agent sessions
+// that can apply a reasoning-effort change immediately, without starting
+// a new conversation.
+type LiveReasoningSwitcher interface {
+	SetLiveReasoningEffort(effort string) bool
+}
+
+// ResumeReasoningApplier is an optional interface for agents that apply a
+// reasoning-effort change to the next message of the current conversation.
+// The saved agent session id is kept. Agents that only honor the effort on
+// a brand-new session leave this interface unimplemented.
+type ResumeReasoningApplier interface {
+	AppliesReasoningOnResume() bool
 }
 
 // StartupWarner is an optional interface for agent sessions that need to surface

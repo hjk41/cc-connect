@@ -7,10 +7,14 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
-// SetReasoningEffort stores the effort applied to future sessions.
-// A value outside the known list is ignored so a bad /reasoning
-// command cannot wipe a previous choice. With no list yet, the
-// trimmed value is stored and checked again when the session starts.
+var _ core.ResumeReasoningApplier = (*Agent)(nil)
+
+// SetReasoningEffort stores the effort applied to this agent.
+// A running session may take it immediately. Otherwise the next
+// start of the current conversation applies it. A value outside
+// the known list is ignored so a bad /reasoning command cannot
+// wipe a previous choice. With no list yet, the trimmed value is
+// stored and checked again when the session starts.
 func (a *Agent) SetReasoningEffort(effort string) {
 	raw := strings.TrimSpace(effort)
 	if raw == "" {
@@ -67,6 +71,11 @@ func (a *Agent) AvailableReasoningEfforts() []string {
 	}
 	return append([]string(nil), a.FallbackReasoningEfforts...)
 }
+
+// AppliesReasoningOnResume reports that a stored effort is sent as
+// thought_level when the current conversation starts again. A brand-new
+// session is not required.
+func (a *Agent) AppliesReasoningOnResume() bool { return a != nil }
 
 func (a *Agent) matchEffort(raw string) (string, bool) {
 	allowed := a.AvailableReasoningEfforts()
