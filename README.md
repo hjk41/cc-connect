@@ -2,6 +2,12 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
+[![CI](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml)
+[![Upstream Sync](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/hjk41/cc-connect)](https://github.com/hjk41/cc-connect/blob/main/go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/hjk41/cc-connect/blob/main/LICENSE)
+
 CC-Connect connects AI coding agents running on your computer or server to messaging apps. You can ask an agent to inspect code, make changes, run commands, and continue work on a project from a chat conversation.
 
 ```text

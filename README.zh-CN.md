@@ -2,6 +2,12 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
+[![CI](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml)
+[![上游同步](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/upstream-sync.yml)
+[![Go 版本](https://img.shields.io/github/go-mod/go-version/hjk41/cc-connect)](https://github.com/hjk41/cc-connect/blob/main/go.mod)
+[![许可证: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/hjk41/cc-connect/blob/main/LICENSE)
+
 CC-Connect 把运行在电脑或服务器上的 AI 编程助手接入聊天软件。你可以通过聊天让助手查看代码、修改项目、执行命令，并继续之前的工作。
 
 ```text
