@@ -8,6 +8,8 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/hjk41/cc-connect)](https://github.com/hjk41/cc-connect/blob/main/go.mod)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/hjk41/cc-connect/blob/main/LICENSE)
 
+This is the maintained **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)** fork of **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)**. It follows upstream `main` daily and focuses on Codex, Cursor, Devin, and DeepSeek Harness (dsh), improving conversation continuity, progress reporting, model selection, and permission handling. Upstream syncs merge automatically after CI passes, unless they touch fork-owned files.
+
 CC-Connect connects AI coding agents running on your computer or server to messaging apps. You can ask an agent to inspect code, make changes, run commands, and continue work on a project from a chat conversation.
 
 ```text
@@ -26,12 +28,6 @@ Codex / Claude Code / Cursor / Devin / dsh / …
 - Supports session history and resume, model and reasoning-effort selection, permission prompts, and skills, depending on the agent and platform.
 - Connects multiple projects and bots, each with its own working directory and configuration.
 - Provides a web interface for configuration and chat, plus scheduled tasks and background service support.
-
-## About this repository
-
-This is the maintained **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)** fork of **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)**.
-
-We focus on Codex, Cursor, Devin, and DeepSeek Harness (dsh), improving conversation continuity, progress reporting, model selection, and permission handling. A daily workflow syncs upstream `main`, runs CI on the merge, and merges automatically only when CI is green; changes to fork-owned files still wait for review.
 
 ## Get started
 
