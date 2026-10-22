@@ -19,6 +19,7 @@ func TestReadOAuthTokens_UsesEffectiveCodexHome(t *testing.T) {
 				home := t.TempDir()
 				if name == "default" {
 					t.Setenv("HOME", home)
+					t.Setenv("USERPROFILE", home) // os.UserHomeDir prefers USERPROFILE on Windows.
 					home = filepath.Join(home, ".codex")
 					if err := os.MkdirAll(home, 0o700); err != nil {
 						t.Fatal(err)

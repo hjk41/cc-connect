@@ -26,7 +26,7 @@ func (a *Agent) ValidateSessionID(ctx context.Context, sessionID string) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	if !scanner.Scan() {

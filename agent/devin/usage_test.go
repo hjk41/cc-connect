@@ -28,18 +28,18 @@ func TestDevinCredentialsPath(t *testing.T) {
 		}
 	}
 	t.Setenv("AGENT_METER_DEVIN_CREDENTIALS", "~/login.toml")
-	if got := devinCredentialsPath("linux", "/home/test"); got != "/home/test/login.toml" {
+	if got := devinCredentialsPath("linux", "/home/test"); got != filepath.Join("/home/test", "login.toml") {
 		t.Fatal(got)
 	}
 	t.Setenv("AGENT_METER_DEVIN_CREDENTIALS", "")
-	if got := devinCredentialsPath("windows", "/home/test"); got != "/roaming/devin/credentials.toml" {
+	if got := devinCredentialsPath("windows", "/home/test"); got != filepath.Join("/roaming", "devin", "credentials.toml") {
 		t.Fatal(got)
 	}
-	if got := devinCredentialsPath("linux", "/home/test"); got != "/xdg/devin/credentials.toml" {
+	if got := devinCredentialsPath("linux", "/home/test"); got != filepath.Join("/xdg", "devin", "credentials.toml") {
 		t.Fatal(got)
 	}
 	t.Setenv("XDG_DATA_HOME", "")
-	if got := devinCredentialsPath("darwin", "/home/test"); got != "/home/test/.local/share/devin/credentials.toml" {
+	if got := devinCredentialsPath("darwin", "/home/test"); got != filepath.Join("/home/test", ".local", "share", "devin", "credentials.toml") {
 		t.Fatal(got)
 	}
 	t.Setenv("APPDATA", "")

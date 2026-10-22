@@ -237,8 +237,15 @@ func TestStartSession_ResumeUsesNewReasoningEffort(t *testing.T) {
 	if !containsSequence(args, []string{"exec", "resume"}) || indexOf(args, "existing-thread") == -1 {
 		t.Fatalf("resume arguments missing: %v", args)
 	}
-	if !containsSequence(args, []string{"-c", `model_reasoning_effort="high"`}) {
-		t.Fatalf("new reasoning effort missing from resume arguments: %v", args)
+	cs, ok := session.(*codexSession)
+	if !ok {
+		t.Fatalf("session type = %T", session)
+	}
+	// Assert on the args the session builds rather than the ones the Windows
+	// .cmd test shim captured: cmd.exe mangles arguments containing embedded
+	// quotes, so `model_reasoning_effort="high"` reaches the fake CLI split.
+	if resumeArgs := cs.buildExecArgs("hello", nil); !containsSequence(resumeArgs, []string{"-c", `model_reasoning_effort="high"`}) {
+		t.Fatalf("new reasoning effort missing from resume arguments: %v", resumeArgs)
 	}
 }
 

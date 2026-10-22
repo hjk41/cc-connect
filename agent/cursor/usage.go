@@ -131,7 +131,6 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 			validToken = true
 			windows, err := parseCursorQuotaWindows(body, time.Now().Unix())
 			if err != nil {
-				lastErr = err
 				return nil, err
 			}
 			if len(windows) > 0 {
@@ -160,7 +159,7 @@ func fetchCursorUsage(ctx context.Context, endpoint, token, method string) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("cursor: usage request failed: %s", core.RedactToken(err.Error(), token))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return nil, fmt.Errorf("%w; run agent login or sign in to Cursor again", errCursorUsageAuth)
 	}

@@ -187,9 +187,9 @@ func TestCursorUsageAuthPath(t *testing.T) {
 	t.Setenv("APPDATA", "/roaming")
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
 	for _, tc := range []struct{ os, want string }{
-		{"darwin", "/home/test/.cursor/auth.json"},
-		{"windows", "/roaming/Cursor/auth.json"},
-		{"linux", "/xdg/cursor/auth.json"},
+		{"darwin", filepath.Join("/home/test", ".cursor", "auth.json")},
+		{"windows", filepath.Join("/roaming", "Cursor", "auth.json")},
+		{"linux", filepath.Join("/xdg", "cursor", "auth.json")},
 	} {
 		if got := cursorUsageAuthPath(tc.os, "/home/test"); got != tc.want {
 			t.Errorf("%s: %s", tc.os, got)

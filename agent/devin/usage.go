@@ -152,7 +152,7 @@ func (a *Agent) GetUsage(ctx context.Context) (*core.UsageReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("devin: usage request failed: %s", core.RedactToken(err.Error(), creds.APIKey))
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		return nil, fmt.Errorf("devin: login expired; run devin auth login again")
 	}
