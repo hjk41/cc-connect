@@ -309,6 +309,9 @@ func TestModelsPrewarm_WaitsOnlyUntilCallerDeadline(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	_ = agent.AvailableModels(context.Background())
+	// The refresh goroutine writes the disk cache after publishing the
+	// in-memory models; wait for it before t.Cleanup restores modelsCacheDir.
+	waitModelsIdle(t, agent)
 	if calls.Load() != 1 {
 		t.Fatalf("catalog fetch ran %d times", calls.Load())
 	}
