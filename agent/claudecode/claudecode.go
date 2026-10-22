@@ -862,6 +862,10 @@ func extractTextContent(raw json.RawMessage) string {
 func (a *Agent) Stop() error { return nil }
 
 // SetMode changes the permission mode for future sessions.
+// AppliesModeOnResume reports that launch settings include the selected mode
+// when restoring an existing conversation.
+func (a *Agent) AppliesModeOnResume() bool { return true }
+
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

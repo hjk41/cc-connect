@@ -7670,12 +7670,6 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 	e.cleanupInteractiveState(interactiveKey)
 	slog.Info("cmdNew: cleanup done, creating new session", "session_key", msg.SessionKey)
 
-	// Clear old session's agent session ID so it cannot be resumed
-	old := sessions.GetOrCreateActive(msg.SessionKey)
-	old.SetAgentSessionID("", "")
-	old.ClearHistory()
-	sessions.Save()
-
 	name := ""
 	if len(args) > 0 {
 		name = strings.Join(args, " ")
@@ -9019,6 +9013,9 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 		return e.i18n.T(MsgDirNotSupported), ""
 	}
 	currentDir := switcher.GetWorkDir()
+	if absDir, err := filepath.Abs(currentDir); err == nil {
+		currentDir = absDir
+	}
 
 	if len(args) == 1 {
 		switch strings.ToLower(strings.TrimSpace(args[0])) {
@@ -9032,6 +9029,9 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 			}
 			if absDir, err := filepath.Abs(baseDir); err == nil {
 				baseDir = absDir
+			}
+			if normalizeWorkspacePath(baseDir) == normalizeWorkspacePath(currentDir) {
+				return "", e.i18n.Tf(MsgDirCurrent, currentDir)
 			}
 
 			if !e.multiWorkspace {
@@ -9102,6 +9102,9 @@ func (e *Engine) dirApply(agent Agent, sessions *SessionManager, interactiveKey,
 	info, err := os.Stat(newDir)
 	if err != nil || !info.IsDir() {
 		return e.i18n.Tf(MsgDirInvalidPath, newDir), ""
+	}
+	if normalizeWorkspacePath(newDir) == normalizeWorkspacePath(currentDir) {
+		return "", e.i18n.Tf(MsgDirCurrent, currentDir)
 	}
 
 	if !e.multiWorkspace {
@@ -10866,7 +10869,7 @@ func (e *Engine) reasoningChangedText(agent Agent, effort string, appliedLive bo
 }
 
 func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
-	agent, _, _, err := e.commandContext(p, msg)
+	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
@@ -10925,13 +10928,8 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 	}
 
 	target := strings.ToLower(args[0])
-	switcher.SetMode(target)
+	appliedLive := e.applyModeSelection(msg.SessionKey, sessions, agent, switcher, target)
 	newMode := switcher.GetMode()
-	appliedLive := e.applyLiveModeChange(msg.SessionKey, newMode)
-
-	if !appliedLive {
-		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
-	}
 
 	modes := switcher.PermissionModes()
 	displayName := newMode
@@ -10947,16 +10945,32 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 		}
 	}
 	replyKey := MsgModeChanged
-	if !appliedLive {
+	if appliedLive {
+		replyKey = MsgModeChangedLive
+	} else {
 		if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
 			replyKey = MsgModeChangedOnResume
 		}
 	}
-	reply := fmt.Sprintf(e.i18n.T(replyKey), displayName)
-	if appliedLive {
-		reply += "\n\n(Current session updated immediately.)"
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(replyKey, displayName))
+}
+
+// applyModeSelection keeps the running turn on live success. Otherwise it
+// restarts the process, preserving conversations that accept a mode on resume.
+func (e *Engine) applyModeSelection(sessionKey string, sessions *SessionManager, agent Agent, switcher ModeSwitcher, mode string) bool {
+	switcher.SetMode(mode)
+	if e.applyLiveModeChange(sessionKey, switcher.GetMode()) {
+		return true
 	}
-	e.reply(p, msg.ReplyCtx, reply)
+	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey))
+	if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
+		return false
+	}
+	s := sessions.GetOrCreateActive(sessionKey)
+	s.SetAgentSessionID("", "")
+	s.ClearHistory()
+	sessions.Save()
+	return false
 }
 
 func (e *Engine) modeUsageText(modes []PermissionModeInfo) string {
@@ -11603,6 +11617,10 @@ func (e *Engine) cmdProvider(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderCurrent), current.Name))
 
 	case "clear", "reset", "none":
+		if switcher.GetActiveProvider() == nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgProviderCleared))
+			return
+		}
 		switcher.SetActiveProvider("")
 		e.cleanupInteractiveState(e.interactiveKeyForSessionKey(msg.SessionKey))
 		{
@@ -11765,6 +11783,10 @@ func (e *Engine) resetAllSessions() {
 }
 
 func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManager, switcher ProviderSwitcher, name string) {
+	if active := switcher.GetActiveProvider(); active != nil && active.Name == name {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgProviderAlreadyActive, name))
+		return
+	}
 	if !switcher.SetActiveProvider(name) {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgProviderNotFound), name))
 		return
@@ -13113,9 +13135,7 @@ func (e *Engine) handleModelCardAction(args, sessionKey string) *Card {
 	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 	if err == nil {
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
-	}
-	e.cleanupInteractiveState(interactiveKey)
-	if err == nil {
+		e.cleanupInteractiveState(interactiveKey)
 		sessions.Save()
 	}
 
@@ -13184,7 +13204,6 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			target = resolveModelSwitchTarget(target, models)
 		}
 		cancel()
-		e.cleanupInteractiveState(interactiveKey)
 		e.interactiveMu.Lock()
 		state := e.interactiveStates[interactiveKey]
 		if state == nil {
@@ -13244,22 +13263,7 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if !ok {
 			return
 		}
-		newMode := strings.ToLower(args)
-		switcher.SetMode(newMode)
-		if e.applyLiveModeChange(sessionKey, switcher.GetMode()) {
-			e.cleanupInteractiveState(interactiveKey)
-			return
-		}
-		e.cleanupInteractiveState(interactiveKey)
-		// Agents that apply the mode when the same conversation resumes keep
-		// the saved session id. Others need a new session.
-		if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
-			return
-		}
-		s := sessions.GetOrCreateActive(sessionKey)
-		s.SetAgentSessionID("", "")
-		s.ClearHistory()
-		sessions.Save()
+		e.applyModeSelection(sessionKey, sessions, agent, switcher, strings.ToLower(args))
 
 	case "/lang":
 		if args == "" {
@@ -13303,6 +13307,10 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		provName := args
 		if provName == "clear" {
 			provName = ""
+		}
+		active := switcher.GetActiveProvider()
+		if (active == nil && provName == "") || (active != nil && active.Name == provName) {
+			return
 		}
 		if switcher.SetActiveProvider(provName) {
 			e.cleanupInteractiveState(interactiveKey)
@@ -13756,6 +13764,7 @@ func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveSt
 	if err == nil {
 		interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
 		e.persistWorkspaceModelOverride(interactiveKey, sessionKey, agent, resolved)
+		e.cleanupInteractiveState(interactiveKey, state)
 		sessions.Save()
 	}
 
@@ -13774,7 +13783,6 @@ func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveSt
 		state.mu.Unlock()
 	}
 	e.pushModelSwitchResultCard(sessionKey, resultCard)
-	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey), state)
 }
 
 func (e *Engine) pushModelSwitchResultCard(sessionKey string, card *Card) {

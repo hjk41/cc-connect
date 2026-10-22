@@ -269,6 +269,10 @@ func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
 
 func (a *Agent) Stop() error { return nil }
 
+// AppliesModeOnResume reports that launch settings include the selected mode
+// when restoring an existing conversation.
+func (a *Agent) AppliesModeOnResume() bool { return true }
+
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

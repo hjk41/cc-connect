@@ -390,6 +390,7 @@ func (env *cujEnv) activeSession(sessionKey string) *Session {
 // ===========================================================================
 
 func TestCUJ_B3_SwitchPreservesHistoryEndToEnd(t *testing.T) {
+	t.Run("NewSlashArchivesPreviousConversation", testCUJNewSlashArchivesPreviousConversation)
 	env := newCUJEnv(t)
 	key := "test:alice"
 
@@ -2909,4 +2910,94 @@ func (p *cujTextCardPlatform) ReplyCard(ctx context.Context, replyCtx any, card 
 }
 func (p *cujTextCardPlatform) SendCard(ctx context.Context, replyCtx any, card *Card) error {
 	return p.Send(ctx, replyCtx, card.RenderText())
+}
+
+// The fake process boundary stores tokens by backend conversation ID so recall
+// only succeeds if the engine actually resumes the original conversation.
+type continuityCUJAgent struct {
+	stubModelModeAgent
+	mu     sync.Mutex
+	tokens map[string]string
+	nextID int
+}
+
+func (a *continuityCUJAgent) AppliesModeOnResume() bool { return true }
+func (a *continuityCUJAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if id == "" {
+		a.nextID++
+		id = fmt.Sprintf("continuity-%d", a.nextID)
+		a.tokens[id] = ""
+	}
+	s := &continuityCUJSession{cujAgentSession: newCUJAgentSession(), agent: a, id: id, mode: a.GetMode()}
+	return s, nil
+}
+func (a *continuityCUJAgent) ListSessions(context.Context) ([]AgentSessionInfo, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var sessions []AgentSessionInfo
+	for id := range a.tokens {
+		sessions = append(sessions, AgentSessionInfo{ID: id, Summary: id})
+	}
+	return sessions, nil
+}
+
+type continuityCUJSession struct {
+	*cujAgentSession
+	agent    *continuityCUJAgent
+	id, mode string
+}
+
+func (s *continuityCUJSession) CurrentSessionID() string { return s.id }
+func (s *continuityCUJSession) Send(prompt, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.agent.mu.Lock()
+	if strings.HasPrefix(prompt, "remember ") {
+		s.agent.tokens[s.id] = strings.TrimPrefix(prompt, "remember ")
+	}
+	token := s.agent.tokens[s.id]
+	s.agent.mu.Unlock()
+	s.events <- Event{Type: EventResult, Content: fmt.Sprintf("recall=%s id=%s mode=%s", token, s.id, s.mode), SessionID: s.id, Done: true}
+	return nil
+}
+func newContinuityCUJEnv(t *testing.T) *cujEnv {
+	env := newCUJEnv(t)
+	a := &continuityCUJAgent{tokens: make(map[string]string)}
+	env.engine.agent = a
+	t.Cleanup(func() { env.engine.cleanupInteractiveState("test:alice") })
+	return env
+}
+func continuityCUJTurn(env *cujEnv, prompt, want string) {
+	env.t.Helper()
+	env.plat.clearSent()
+	env.userSends("alice", prompt)
+	env.waitFor(want, 2*time.Second, func() bool { return strings.Contains(strings.Join(env.plat.getSent(), "\n"), want) })
+	// Wait until the foreground turn releases its lock before issuing commands.
+	env.waitFor("turn complete", 2*time.Second, func() bool { return !env.activeSession("test:alice").Busy() })
+}
+
+func TestCUJ_C7_ModeSwitchPreservesHistory(t *testing.T) {
+	env := newContinuityCUJEnv(t)
+	continuityCUJTurn(env, "remember mode-token", "recall=mode-token id=continuity-1")
+	env.userSends("alice", "/mode yolo")
+	continuityCUJTurn(env, "recall", "recall=mode-token id=continuity-1 mode=yolo")
+	env.plat.clearSent()
+	env.userSends("alice", "/history")
+	if !strings.Contains(strings.Join(env.plat.getSent(), "\n"), "remember mode-token") {
+		t.Fatal("/mode erased visible history")
+	}
+}
+
+func testCUJNewSlashArchivesPreviousConversation(t *testing.T) {
+	env := newContinuityCUJEnv(t)
+	continuityCUJTurn(env, "remember archive-token", "recall=archive-token id=continuity-1")
+	env.userSends("alice", "/new second")
+	continuityCUJTurn(env, "remember second-token", "recall=second-token id=continuity-2")
+	env.userSends("alice", "/switch continuity-1")
+	env.plat.clearSent()
+	env.userSends("alice", "/history")
+	if !strings.Contains(strings.Join(env.plat.getSent(), "\n"), "remember archive-token") {
+		t.Fatal("/new then /switch lost the original local history")
+	}
+	continuityCUJTurn(env, "recall", "recall=archive-token id=continuity-1")
 }

@@ -222,6 +222,14 @@ func (a *Agent) Stop() error { return nil }
 
 // ── ModeSwitcher ─────────────────────────────────────────────
 
+// AppliesModeOnResume reports that launch settings include the selected mode
+// when restoring an existing conversation.
+func (a *Agent) AppliesModeOnResume() bool { return true }
+
+// AppliesReasoningOnResume reports that both JSON and RPC launches pass
+// --thinking together with the saved --session-id.
+func (a *Agent) AppliesReasoningOnResume() bool { return true }
+
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -427,9 +435,9 @@ func settingsPath() string {
 
 // piSettings represents the structure of pi's settings.json relevant fields.
 type piSettings struct {
-	EnabledModels  []string `json:"enabledModels"`
-	DefaultModel   string   `json:"defaultModel"`
-	DefaultProvider string  `json:"defaultProvider"`
+	EnabledModels   []string `json:"enabledModels"`
+	DefaultModel    string   `json:"defaultModel"`
+	DefaultProvider string   `json:"defaultProvider"`
 }
 
 // readSettings reads and parses pi's settings.json.

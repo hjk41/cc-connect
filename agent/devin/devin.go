@@ -88,6 +88,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return a.Agent.StartSession(ctx, sessionID)
 }
 
+// AppliesModeOnResume is Devin-specific: its ACP server supports session/set_mode
+// after session/load or session/resume. Generic ACP servers need not support it.
+func (a *Agent) AppliesModeOnResume() bool { return true }
+
 // Name returns the stable agent type identifier used in config,
 // session store keys, and audit logging.
 func (a *Agent) Name() string { return "devin" }

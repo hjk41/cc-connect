@@ -32,6 +32,7 @@ type Agent struct {
 	cliExtraArgs []string // extra args from cmd after the binary name
 	configEnv    []string // env vars from [projects.agent.options.env]
 	model        string
+	modelPinned  bool   // explicit runtime selection overrides the provider default
 	mode         string // "default" | "bypassPermissions"
 	providers    []core.ProviderConfig
 	activeIdx    int // -1 = no provider set
@@ -178,12 +179,16 @@ func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.model = model
+	a.modelPinned = true
 	slog.Info("copilot: model changed", "model", model)
 }
 
 func (a *Agent) GetModel() string {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
+	if a.modelPinned {
+		return a.model
+	}
 	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
 }
 
@@ -209,6 +214,10 @@ func (a *Agent) SetSessionEnv(env []string) {
 	defer a.mu.Unlock()
 	a.sessionEnv = env
 }
+
+// AppliesModeOnResume reports that launch settings include the selected mode
+// when restoring an existing conversation.
+func (a *Agent) AppliesModeOnResume() bool { return true }
 
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
@@ -242,8 +251,11 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	provider := a.providerConfigLocked()
+	if provider != nil && a.modelPinned {
+		provider.ModelID = model
+	}
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
-		if m := a.providers[a.activeIdx].Model; m != "" {
+		if m := a.providers[a.activeIdx].Model; !a.modelPinned && m != "" {
 			model = m
 		}
 	}
@@ -521,12 +533,14 @@ func (a *Agent) SetActiveProvider(name string) bool {
 	defer a.mu.Unlock()
 	if name == "" {
 		a.activeIdx = -1
+		a.modelPinned = false
 		slog.Info("copilot: provider cleared")
 		return true
 	}
 	for i, p := range a.providers {
 		if p.Name == name {
 			a.activeIdx = i
+			a.modelPinned = false
 			slog.Info("copilot: provider switched", "provider", name)
 			return true
 		}

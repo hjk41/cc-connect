@@ -32,6 +32,7 @@ func init() {
 type Agent struct {
 	workDir      string
 	model        string
+	modelPinned  bool // explicit runtime selection overrides the provider default
 	mode         string
 	cmd          string   // CLI binary name, default "gemini"
 	cliExtraArgs []string // extra args from cmd after the binary name
@@ -119,12 +120,16 @@ func (a *Agent) SetModel(model string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.model = model
+	a.modelPinned = true
 	slog.Info("gemini: model changed", "model", model)
 }
 
 func (a *Agent) GetModel() string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.modelPinned {
+		return a.model
+	}
 	return core.GetProviderModel(a.providers, a.activeIdx, a.model)
 }
 
@@ -217,7 +222,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	if a.activeIdx >= 0 && a.activeIdx < len(a.providers) {
-		if m := a.providers[a.activeIdx].Model; m != "" {
+		if m := a.providers[a.activeIdx].Model; !a.modelPinned && m != "" {
 			model = m
 		}
 	}
@@ -265,6 +270,10 @@ func (a *Agent) DeleteSession(_ context.Context, sessionID string) error {
 func (a *Agent) Stop() error { return nil }
 
 // ── ModeSwitcher ────────────────────────────────────────────────
+
+// AppliesModeOnResume reports that launch settings include the selected mode
+// when restoring an existing conversation.
+func (a *Agent) AppliesModeOnResume() bool { return true }
 
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
@@ -378,12 +387,14 @@ func (a *Agent) SetActiveProvider(name string) bool {
 	defer a.mu.Unlock()
 	if name == "" {
 		a.activeIdx = -1
+		a.modelPinned = false
 		slog.Info("gemini: provider cleared")
 		return true
 	}
 	for i, p := range a.providers {
 		if p.Name == name {
 			a.activeIdx = i
+			a.modelPinned = false
 			slog.Info("gemini: provider switched", "provider", name)
 			return true
 		}

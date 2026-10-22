@@ -232,6 +232,7 @@ const (
 	MsgQuietGlobalOn               MsgKey = "quiet_global_on"
 	MsgQuietGlobalOff              MsgKey = "quiet_global_off"
 	MsgModeChanged                 MsgKey = "mode_changed"
+	MsgModeChangedLive             MsgKey = "mode_changed_live"
 	MsgModeChangedOnResume         MsgKey = "mode_changed_on_resume"
 	MsgModeNotSupported            MsgKey = "mode_not_supported"
 	MsgSessionRestarting           MsgKey = "session_restarting"
@@ -268,6 +269,7 @@ const (
 	MsgProviderListEmpty           MsgKey = "provider_list_empty"
 	MsgProviderSwitchHint          MsgKey = "provider_switch_hint"
 	MsgProviderNotFound            MsgKey = "provider_not_found"
+	MsgProviderAlreadyActive       MsgKey = "provider_already_active"
 	MsgProviderSwitched            MsgKey = "provider_switched"
 	MsgProviderCleared             MsgKey = "provider_cleared"
 	MsgProviderAdded               MsgKey = "provider_added"
@@ -990,6 +992,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。新しいセッションで有効になります。",
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Las nuevas sesiones usarán este modo.",
 	},
+	MsgModeChangedLive: {
+		LangEnglish:            "🔄 Permission mode switched to **%s**. Current session updated immediately.",
+		LangChinese:            "🔄 权限模式已切换为 **%s**，当前会话已立即更新。",
+		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，目前會話已立即更新。",
+		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。現在のセッションに即座に適用しました。",
+		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. La sesión actual se actualizó inmediatamente.",
+	},
 	MsgModeChangedOnResume: {
 		LangEnglish:            "🔄 Permission mode switched to **%s**. It applies on the next message in this conversation.",
 		LangChinese:            "🔄 权限模式已切换为 **%s**，下一条消息将在当前会话中使用此模式。",
@@ -1618,6 +1627,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 未找到 Provider %q。使用 `/provider list` 查看可用列表。",
 		LangJapanese:           "❌ プロバイダ %q が見つかりません。`/provider list` で一覧を確認してください。",
 		LangSpanish:            "❌ Proveedor %q no encontrado. Use `/provider list` para ver los disponibles.",
+	},
+	MsgProviderAlreadyActive: {
+		LangEnglish:            "Provider **%s** is already active.",
+		LangChinese:            "Provider **%s** 已在使用中。",
+		LangTraditionalChinese: "Provider **%s** 已在使用中。",
+		LangJapanese:           "プロバイダー **%s** はすでに使用中です。",
+		LangSpanish:            "El proveedor **%s** ya está activo.",
 	},
 	MsgProviderSwitched: {
 		LangEnglish:            "✅ Provider switched to **%s**. New sessions will use this provider.",
