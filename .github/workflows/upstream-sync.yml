@@ -1,9 +1,8 @@
 name: Upstream Sync
 
+# Manual fallback only. The daily sync is run by the DSH agent through a
+# cc-connect cron job; see docs/upstream-sync-agent.md.
 on:
-  schedule:
-    # 01:00 Asia/Tokyo (JST). GitHub cron is UTC-only.
-    - cron: '0 16 * * *'
   workflow_dispatch:
 
 permissions:
@@ -17,22 +16,19 @@ jobs:
   sync:
     if: github.repository == 'hjk41/cc-connect'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     permissions:
       contents: write
       pull-requests: write
-      actions: write
-      statuses: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-      - name: Sync upstream and merge when CI passes
+      - name: Prepare upstream sync pull request
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-          ACTIONS_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           SYNC_BRANCH: automation/upstream-sync
         run: bash .github/maintenance/upstream-sync.sh

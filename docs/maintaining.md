@@ -49,17 +49,13 @@ For macOS temporary-path comparisons, prefix Go commands with `TMPDIR=/private/t
 
 ## Daily upstream sync
 
-[Upstream Sync](../.github/workflows/upstream-sync.yml) runs daily at **16:00 UTC / 01:00 JST the next day**, and can also be started using **Run workflow**. It is guarded to run only in `hjk41/cc-connect`; change that guard deliberately when reusing it in another fork.
+The daily sync is run by the **DSH agent** through cc-connect's cron scheduler at **01:00 JST**, in the chat bound to this repository. It does not run on GitHub Actions. The task fetches upstream `main`, resolves conflicts in a local sync branch, runs the local checks, pushes the branch and PR, waits for CI, fixes failures, and merges with a merge commit only when CI is green. If it cannot make CI green or resolve a conflict safely, it stops and leaves `main` unchanged. See [DSH daily upstream sync](upstream-sync-agent.md) for the prompt, schedule, and setup command.
 
-The job fetches upstream `main`, skips when all upstream commits are already included, and otherwise prepares a merge on the reserved `automation/upstream-sync` branch. It creates or updates one PR targeting this fork's `main`. An unchanged upstream and base reuse the existing merge commit. The branch update uses a lease, and the workflow never pushes directly to `main`.
+The [Upstream Sync](../.github/workflows/upstream-sync.yml) workflow is a **manual fallback only** (`Run workflow`). It prepares a merge on the reserved `automation/upstream-sync` branch and creates or updates one PR; it never merges. An unchanged upstream and base reuse the existing merge commit, and the branch update uses a lease.
 
-After preparing the PR, the workflow dispatches CI on the sync branch explicitly. A PR created with `GITHUB_TOKEN` does not trigger `pull_request` workflows, but `workflow_dispatch` is exempt from that restriction. The job waits for the run, requires the **CI passed** check, verifies the tested commit is still the PR head, and posts an equivalent **CI passed** commit status for that commit. The status is needed because a `workflow_dispatch` check run is not part of the PR's check suite, so branch protection cannot see it directly. The job then merges with a merge commit only when CI succeeds. A failed CI run leaves the PR open, fails the sync run, and leaves `main` untouched, so `main` stays green.
+A conflict in the manual fallback fails the run, lists the conflicting paths, aborts the local merge, and leaves remote branches untouched. The DSH task handles conflicts by reading both sides and preserving fork features; a conflict it cannot resolve safely blocks the sync instead of forcing a merge.
 
-Sync merges that touch fork-owned files — `.github/`, `README.md`, `README.zh-CN.md`, `CODEOWNERS`, and `docs/maintaining.md` — are left open for manual review even when CI passes. The run summary lists the paths and links the CI run.
-
-Merge conflicts fail the run, list the conflicting paths in its summary, abort the local merge, and leave remote branches untouched. Resolve them in a local sync branch, run the checks, and open a PR. The Actions failure is the signal to investigate; there is no daily empty commit or duplicate issue.
-
-The default `GITHUB_TOKEN` is sufficient for branch/PR creation and CI dispatch once Actions PR creation is allowed. For upstream changes that touch workflow files, set a repository secret named **UPSTREAM_SYNC_TOKEN** using a token restricted to this fork with **Contents**, **Pull requests**, and **Workflows** write permissions. The workflow uses the job's own token for Actions and status API calls, so the secret does not need Actions or statuses scope. Never put it in repository files. See [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+The manual workflow uses `GITHUB_TOKEN` for branch/PR creation. For upstream changes that touch workflow files, set a repository secret named **UPSTREAM_SYNC_TOKEN** with **Contents**, **Pull requests**, and **Workflows** write permissions. Never put it in repository files.
 
 Sync PRs normally merge automatically after CI. Review any PR left open by the fork-owned-file guard or a CI failure before merging it manually, and keep merge commits. The repository does not automatically close issues or PRs solely because they are inactive.
 
@@ -75,8 +71,10 @@ Source builds and this fork's release assets are the fork's installation channel
 
 ## 维护约定（中文）
 
-本 fork 以日常可用性和持续同步上游为目标。每天 01:00 JST（16:00 UTC）的工作流会检查上游并准备同步 PR，主动触发 CI；仅当 `CI passed` 后以 merge commit 自动合入，确保 `main` 始终为绿。CI 失败时 PR 保持打开、同步任务失败；若合并改动 `.github/`、README、CODEOWNERS 或维护文档，同样保留 PR 等待人工审查。
+本 fork 以日常可用性和持续同步上游为目标。每日同步由 **DSH agent** 通过 cc-connect 的 cron 在 01:00 JST 执行，运行在绑定本仓库的聊天工作区，不在 GitHub Actions 上跑。任务会拉取上游、在本地同步分支解决冲突、跑测试、推送分支和 PR、等待 CI 并修复失败，仅在 CI 全绿后以 merge commit 合入；无法修绿或无法安全解决冲突时停止，保持 `main` 不变。提示词、配置和调度方式见 [DSH daily upstream sync](upstream-sync-agent.md)。
+
+GitHub 的 Upstream Sync 工作流仅作**手动兜底**（Run workflow），只准备 `automation/upstream-sync` 分支上的 PR，不自动合并；冲突时会中止并列出路径。
 
 新贡献请投递到 `hjk41/cc-connect:main`。不因长期没有活动而自动关闭 Issue 或 PR，不承诺固定审核或发版时限。新增功能需测试，Bug 修复需回归测试，涉及多步用户流程时更新 CUJ。
 
-Actions 默认只读，只有同步和创建 Release 的任务申请所需写权限。同步任务通过 `workflow_dispatch` 主动触发 CI（该事件不受默认令牌的递归限制），因此默认令牌即可等待并校验检查结果；若上游改动工作流文件，请设置具备 Contents、Pull requests、Workflows 写权限的 `UPSTREAM_SYNC_TOKEN`。工作流使用任务自身的令牌调用 Actions 和状态 API，因此该 secret 不需要 Actions 或 statuses 权限。fork 发版使用 `-fork.N` 标签，自动生成草稿及校验文件，维护者验证后再发布。主分支已配置 `CI passed` 必需检查，第一次提交并推送工作流后需确认其成功运行；管理员可绕过规则完成初始推送。
+Actions 默认只读，只有同步和创建 Release 的任务申请所需写权限。手动同步工作流使用默认令牌创建分支和 PR；若上游改动工作流文件，请设置具备 Contents、Pull requests、Workflows 写权限的 `UPSTREAM_SYNC_TOKEN`。fork 发版使用 `-fork.N` 标签，自动生成草稿及校验文件，维护者验证后再发布。主分支已配置 `CI passed` 必需检查，第一次提交并推送工作流后需确认其成功运行；管理员可绕过规则完成初始推送。
