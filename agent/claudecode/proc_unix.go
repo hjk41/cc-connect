@@ -28,14 +28,17 @@ func prepareCmdForKill(cmd *exec.Cmd) {
 }
 
 // signalProcessGroup sends sig to the entire process group rooted at cmd.
-// Returns nil if the group is already gone.
+// Returns nil if the group is already gone. EPERM is treated as gone too:
+// once the child has been reaped the group id can be recycled by an unrelated
+// user's process, and macOS reports EPERM rather than ESRCH in that case.
 func signalProcessGroup(cmd *exec.Cmd, sig syscall.Signal) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
 	if err := syscall.Kill(-cmd.Process.Pid, sig); err != nil &&
 		!errors.Is(err, os.ErrProcessDone) &&
-		!errors.Is(err, syscall.ESRCH) {
+		!errors.Is(err, syscall.ESRCH) &&
+		!errors.Is(err, syscall.EPERM) {
 		return err
 	}
 	return nil

@@ -1284,6 +1284,7 @@ func TestConfigHomeFromEnv_HonorsPerProjectConfigDir(t *testing.T) {
 	// Without the variable it must fall back to ~/.claude (HOME-based).
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir prefers USERPROFILE on Windows.
 	if got, want := configHomeFromEnv(nil), filepath.Join(home, ".claude"); got != want {
 		t.Errorf("configHomeFromEnv(nil) = %q, want %q", got, want)
 	}
