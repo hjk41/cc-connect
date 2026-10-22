@@ -662,6 +662,22 @@ func waitDeleteModePhase(t *testing.T, e *Engine, sessionKey, targetPhase string
 	t.Fatalf("timed out waiting for delete mode phase %q", targetPhase)
 }
 
+// waitForRefreshedCard waits for the result card pushed by the asynchronous
+// delete path. The phase flips to "result" before RefreshCard runs, so tests
+// must wait for the card itself instead of only the phase.
+func waitForRefreshedCard(t *testing.T, p *stubCardPlatform) *Card {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cards := p.getRefreshedCards(); len(cards) > 0 {
+			return cards[len(cards)-1]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for refreshed result card via RefreshCard")
+	return nil
+}
+
 type stubProviderAgent struct {
 	stubAgent
 	providers []ProviderConfig
@@ -4349,13 +4365,9 @@ func TestDeleteMode_ConfirmAndSubmitDeletesSelectedSessions(t *testing.T) {
 	if got, want := strings.Join(agent.deleted, ","), "session-1,session-3"; got != want {
 		t.Fatalf("deleted = %q, want %q", got, want)
 	}
-	refreshed := p.getRefreshedCards()
-	if len(refreshed) == 0 {
-		t.Fatal("expected refreshed result card via RefreshCard")
-	}
-	pushedCard := refreshed[len(refreshed)-1]
-	if !strings.Contains(pushedCard.RenderText(), "Session deleted: One") {
-		t.Fatalf("result text = %q, want delete result", pushedCard.RenderText())
+	refreshed := waitForRefreshedCard(t, p)
+	if !strings.Contains(refreshed.RenderText(), "Session deleted: One") {
+		t.Fatalf("result text = %q, want delete result", refreshed.RenderText())
 	}
 }
 
@@ -4384,11 +4396,7 @@ func TestDeleteMode_SubmitReportsMissingSelectedSessions(t *testing.T) {
 	}
 	// Wait for async deletion to complete.
 	waitDeleteModePhase(t, e, msg.SessionKey, "result")
-	refreshed := p.getRefreshedCards()
-	if len(refreshed) == 0 {
-		t.Fatal("expected refreshed result card via RefreshCard")
-	}
-	pushedCard := refreshed[len(refreshed)-1]
+	pushedCard := waitForRefreshedCard(t, p)
 	resultText := pushedCard.RenderText()
 	if !strings.Contains(resultText, "Session deleted: One") {
 		t.Fatalf("result text = %q, want deleted session line", resultText)
@@ -4489,10 +4497,7 @@ func TestDeleteMode_SubmitBlocksActiveSession(t *testing.T) {
 	if len(agent.deleted) != 0 {
 		t.Fatalf("deleted = %v, want none", agent.deleted)
 	}
-	if len(p.getRefreshedCards()) == 0 {
-		t.Fatal("expected refreshed result card via RefreshCard")
-	}
-	pushedCard := p.getRefreshedCards()[len(p.getRefreshedCards())-1]
+	pushedCard := waitForRefreshedCard(t, p)
 	if !strings.Contains(pushedCard.RenderText(), "Cannot delete the currently active session") {
 		t.Fatalf("result text = %q, want active-session warning", pushedCard.RenderText())
 	}
@@ -4565,11 +4570,7 @@ func TestDeleteMode_FormSubmitShowsConfirmThenDeletes(t *testing.T) {
 	if got, want := strings.Join(agent.deleted, ","), "session-1,session-3"; got != want {
 		t.Fatalf("deleted = %q, want %q", got, want)
 	}
-	refreshed := p.getRefreshedCards()
-	if len(refreshed) == 0 {
-		t.Fatal("expected pushed result card via RefreshCard")
-	}
-	pushedCard := refreshed[len(refreshed)-1]
+	pushedCard := waitForRefreshedCard(t, p)
 	if !strings.Contains(pushedCard.RenderText(), "Session deleted: One") {
 		t.Fatalf("result text = %q, want delete result", pushedCard.RenderText())
 	}
