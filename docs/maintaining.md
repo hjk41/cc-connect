@@ -59,7 +59,7 @@ Sync merges that touch fork-owned files — `.github/`, `README.md`, `README.zh-
 
 Merge conflicts fail the run, list the conflicting paths in its summary, abort the local merge, and leave remote branches untouched. Resolve them in a local sync branch, run the checks, and open a PR. The Actions failure is the signal to investigate; there is no daily empty commit or duplicate issue.
 
-The default `GITHUB_TOKEN` is sufficient for branch/PR creation and CI dispatch once Actions PR creation is allowed. For upstream changes that touch workflow files, set a repository secret named **UPSTREAM_SYNC_TOKEN** using a token restricted to this fork with **Contents**, **Pull requests**, and **Workflows** write permissions. The workflow uses the job's own token for Actions API calls, so the secret does not need Actions scope. Never put it in repository files. See [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+The default `GITHUB_TOKEN` is sufficient for branch/PR creation and CI dispatch once Actions PR creation is allowed. For upstream changes that touch workflow files, set a repository secret named **UPSTREAM_SYNC_TOKEN** using a token restricted to this fork with **Contents**, **Pull requests**, and **Workflows** write permissions. The workflow uses the job's own token for Actions and status API calls, so the secret does not need Actions or statuses scope. Never put it in repository files. See [GitHub's workflow-trigger rules](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 
 Sync PRs normally merge automatically after CI. Review any PR left open by the fork-owned-file guard or a CI failure before merging it manually, and keep merge commits. The repository does not automatically close issues or PRs solely because they are inactive.
 
@@ -79,4 +79,4 @@ Source builds and this fork's release assets are the fork's installation channel
 
 新贡献请投递到 `hjk41/cc-connect:main`。不因长期没有活动而自动关闭 Issue 或 PR，不承诺固定审核或发版时限。新增功能需测试，Bug 修复需回归测试，涉及多步用户流程时更新 CUJ。
 
-Actions 默认只读，只有同步和创建 Release 的任务申请所需写权限。同步任务通过 `workflow_dispatch` 主动触发 CI（该事件不受默认令牌的递归限制），因此默认令牌即可等待并校验检查结果；若上游改动工作流文件，请设置具备 Contents、Pull requests、Workflows 写权限的 `UPSTREAM_SYNC_TOKEN`。工作流使用任务自身的令牌调用 Actions API，因此该 secret 不需要 Actions 权限。fork 发版使用 `-fork.N` 标签，自动生成草稿及校验文件，维护者验证后再发布。主分支已配置 `CI passed` 必需检查，第一次提交并推送工作流后需确认其成功运行；管理员可绕过规则完成初始推送。
+Actions 默认只读，只有同步和创建 Release 的任务申请所需写权限。同步任务通过 `workflow_dispatch` 主动触发 CI（该事件不受默认令牌的递归限制），因此默认令牌即可等待并校验检查结果；若上游改动工作流文件，请设置具备 Contents、Pull requests、Workflows 写权限的 `UPSTREAM_SYNC_TOKEN`。工作流使用任务自身的令牌调用 Actions 和状态 API，因此该 secret 不需要 Actions 或 statuses 权限。fork 发版使用 `-fork.N` 标签，自动生成草稿及校验文件，维护者验证后再发布。主分支已配置 `CI passed` 必需检查，第一次提交并推送工作流后需确认其成功运行；管理员可绕过规则完成初始推送。

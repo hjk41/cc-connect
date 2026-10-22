@@ -8,9 +8,9 @@ protected_paths() {
     grep -E '^(\.github/|README\.md$|README\.zh-CN\.md$|CODEOWNERS$|docs/maintaining\.md$)' || true
 }
 
-# actions_gh uses the job's own token for Actions API calls so a
+# job_gh uses the job's own token for Actions and status API calls so a
 # UPSTREAM_SYNC_TOKEN only needs contents/pull-requests/workflows scopes.
-actions_gh() {
+job_gh() {
   GH_TOKEN="${ACTIONS_TOKEN:-${GH_TOKEN:-}}" gh "$@"
 }
 
@@ -34,13 +34,13 @@ wait_for_ci_and_merge() {
   # GITHUB_TOKEN-created PRs do not trigger pull_request workflows. Dispatch
   # CI explicitly on the sync branch, then merge only after the required check
   # reports success. workflow_dispatch is exempt from the no-recursive-runs rule.
-  before=$(actions_gh run list --workflow=ci.yml --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // 0' 2>/dev/null || true)
+  before=$(job_gh run list --workflow=ci.yml --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // 0' 2>/dev/null || true)
   before=${before:-0}
-  actions_gh workflow run ci.yml --ref "$branch"
+  job_gh workflow run ci.yml --ref "$branch"
 
   run_id=""
   for i in $(seq 1 30); do
-    run_id=$(actions_gh run list --workflow=ci.yml --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // 0' 2>/dev/null || true)
+    run_id=$(job_gh run list --workflow=ci.yml --branch "$branch" --limit 1 --json databaseId --jq '.[0].databaseId // 0' 2>/dev/null || true)
     if [ -n "$run_id" ] && [ "$run_id" != "0" ] && [ "$run_id" != "$before" ]; then
       break
     fi
@@ -52,7 +52,7 @@ wait_for_ci_and_merge() {
     return 1
   fi
 
-  if ! actions_gh run watch "$run_id" --exit-status; then
+  if ! job_gh run watch "$run_id" --exit-status; then
     {
       echo '## Upstream sync CI failed'
       echo "Run: https://github.com/${GH_REPO}/actions/runs/${run_id}"
@@ -61,7 +61,7 @@ wait_for_ci_and_merge() {
     return 1
   fi
 
-  run_sha=$(actions_gh run view "$run_id" --json headSha --jq .headSha)
+  run_sha=$(job_gh run view "$run_id" --json headSha --jq .headSha)
   pr_sha=$(gh pr view "$pr_number" --json headRefOid --jq .headRefOid)
   if [ "$run_sha" != "$pr_sha" ]; then
     echo "Sync branch moved while CI was running; not merging PR #$pr_number." >> "$GITHUB_STEP_SUMMARY"
@@ -72,7 +72,7 @@ wait_for_ci_and_merge() {
   # the PR, so branch protection cannot see the CI workflow's "CI passed" job.
   # Post an equivalent commit status for the tested SHA (only after the run
   # actually succeeded) so the required context is satisfied on the PR.
-  gh api "repos/${GH_REPO}/statuses/${run_sha}" \
+  job_gh api "repos/${GH_REPO}/statuses/${run_sha}" \
     -f state=success \
     -f context='CI passed' \
     -f description="CI run ${run_id} passed" \
