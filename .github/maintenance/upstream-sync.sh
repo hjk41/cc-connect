@@ -68,6 +68,16 @@ wait_for_ci_and_merge() {
     return 1
   fi
 
+  # workflow_dispatch check-runs live in a check suite that is not attached to
+  # the PR, so branch protection cannot see the CI workflow's "CI passed" job.
+  # Post an equivalent commit status for the tested SHA (only after the run
+  # actually succeeded) so the required context is satisfied on the PR.
+  gh api "repos/${GH_REPO}/statuses/${run_sha}" \
+    -f state=success \
+    -f context='CI passed' \
+    -f description="CI run ${run_id} passed" \
+    -f target_url="https://github.com/${GH_REPO}/actions/runs/${run_id}" >/dev/null
+
   protected=$(protected_paths)
   if [ -n "$protected" ]; then
     {
@@ -132,6 +142,7 @@ Merge the latest `chenhg5/cc-connect:main` into this maintained fork, preserving
 
 Automation:
 - Dispatches CI on this branch and waits for the required `CI passed` check.
+- Posts the matching `CI passed` commit status for the tested commit so branch protection can see it.
 - Merges with a merge commit only when CI passes, so `main` stays green.
 - Leaves this PR open when CI fails or the merge changes fork-owned files (`.github/`, READMEs, CODEOWNERS, `docs/maintaining.md`).
 

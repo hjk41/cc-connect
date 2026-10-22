@@ -21,6 +21,7 @@ cat > "$sync_test_dir/bin/gh" <<'MOCK'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$SYNC_TEST_GH_LOG"
+if [ "$1" = api ]; then exit 0; fi
 case "$1 $2" in
   'pr list') if [ -n "$SYNC_TEST_OPEN_PR" ]; then echo 7; fi ;;
   'pr create' | 'pr edit' | 'pr merge') ;;
@@ -92,6 +93,7 @@ test "$(git -C "$sync_test_dir/work" rev-parse HEAD^2)" = "$upstream_sha"
 grep -q '^pr create ' "$SYNC_TEST_GH_LOG"
 grep -q '^workflow run ci.yml --ref automation/upstream-sync$' "$SYNC_TEST_GH_LOG"
 grep -q '^run watch 1 --exit-status$' "$SYNC_TEST_GH_LOG"
+grep -q '^api repos/test/fork/statuses/deadbeef ' "$SYNC_TEST_GH_LOG"
 grep -q '^pr merge 7 --merge$' "$SYNC_TEST_GH_LOG"
 grep -q 'Merged sync PR #7 after CI passed' "$GITHUB_STEP_SUMMARY"
 echo 'PASS: sync preserves merge parents, dispatches CI, and merges only after CI passes'
@@ -113,6 +115,7 @@ reset_work_main
 : > "$SYNC_TEST_GH_LOG"
 run_sync > "$sync_test_dir/output" 2>&1
 grep -q '^run watch 3 --exit-status$' "$SYNC_TEST_GH_LOG"
+grep -q '^api repos/test/fork/statuses/deadbeef ' "$SYNC_TEST_GH_LOG"
 if grep -q '^pr merge ' "$SYNC_TEST_GH_LOG"; then
   echo 'FAIL: protected sync unexpectedly merged' >&2
   exit 1
@@ -134,6 +137,10 @@ if run_sync > "$sync_test_dir/output" 2>&1; then
 fi
 export SYNC_TEST_CI_FAIL=''
 grep -q '^run watch 4 --exit-status$' "$SYNC_TEST_GH_LOG"
+if grep -q '^api repos/test/fork/statuses/' "$SYNC_TEST_GH_LOG"; then
+  echo 'FAIL: failed CI posted a success status' >&2
+  exit 1
+fi
 if grep -q '^pr merge ' "$SYNC_TEST_GH_LOG"; then
   echo 'FAIL: sync merged even though CI failed' >&2
   exit 1
