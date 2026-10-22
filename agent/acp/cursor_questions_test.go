@@ -19,7 +19,7 @@ func newCursorRequestTestSession(t *testing.T) (*acpSession, *bytes.Buffer) {
 	s := &acpSession{
 		ctx: ctx, cancel: cancel, events: make(chan core.Event, 8),
 		permByID:      make(map[string]permState),
-		toolInputByID: make(map[string]string), toolNameByID: make(map[string]string),
+		toolInputByID: make(map[string]string), toolNameByID: make(map[toolCallKey]string),
 	}
 	s.alive.Store(true)
 	var out bytes.Buffer

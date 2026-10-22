@@ -341,7 +341,7 @@ func newTestSession(t *testing.T, cb sessionCallbacks) (*acpSession, *io.PipeWri
 		events:        make(chan core.Event, 32),
 		permByID:      make(map[string]permState),
 		toolInputByID: make(map[string]string),
-		toolNameByID:  make(map[string]string),
+		toolNameByID:  make(map[toolCallKey]string),
 		updateNotify:  make(chan struct{}, 1),
 		callbacks:     cb,
 	}

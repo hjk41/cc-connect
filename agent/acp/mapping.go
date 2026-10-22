@@ -151,9 +151,6 @@ func mapToolCallUpdate(sessionID string, update json.RawMessage) []core.Event {
 	}
 	toolLabel := u.Title
 	if toolLabel == "" {
-		toolLabel = u.ToolCallID
-	}
-	if toolLabel == "" {
 		toolLabel = "tool"
 	}
 	body := extractToolCallContentText(u.Content)

@@ -1227,7 +1227,15 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "item/completed":
 		var notif itemNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
-			if notif.Item["type"] == "contextCompaction" {
+			if notif.Item["delivery"] == "async" {
+				// Async user input can arrive on a later turn (or with no
+				// turn id), so it must bypass the turn filter; only a child
+				// thread's input is discarded.
+				if notif.ThreadID != "" && notif.ThreadID != s.CurrentSessionID() {
+					return
+				}
+				s.handleItemCompleted(notif.Item)
+			} else if notif.Item["type"] == "contextCompaction" {
 				if notif.ThreadID == s.CurrentSessionID() {
 					s.handleItemCompleted(notif.Item)
 				}
@@ -1327,6 +1335,9 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 
 	case "agentMessage":
+		if s.handleAsyncUserInput(item) {
+			return
+		}
 		text, _ := item["text"].(string)
 		if strings.TrimSpace(text) != "" {
 			s.stateMu.Lock()

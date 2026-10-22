@@ -1074,11 +1074,11 @@ func TestClose_ForceKillsProcessStillRunningAfterTurnCompleted(t *testing.T) {
 	waitForThreadID(t, cs, "thread-overlap")
 	waitForDoneResult(t, cs.Events())
 
-	waiting := make(chan error, 1)
-	go func() { waiting <- cs.Send("second", "", nil, nil) }()
+	followup := make(chan error, 1)
+	go func() { followup <- cs.Send("second", "", nil, nil) }()
 	select {
-	case err := <-waiting:
-		t.Fatalf("next turn must wait for old process, got %v", err)
+	case err := <-followup:
+		t.Fatalf("Send(second) returned before the first process exited: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	waitForFileLines(t, startsFile, 1)
@@ -1087,16 +1087,16 @@ func TestClose_ForceKillsProcessStillRunningAfterTurnCompleted(t *testing.T) {
 	if err := cs.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	select {
-	case err := <-waiting:
-		if err == nil {
-			t.Fatal("waiting Send started after Close")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Close did not cancel waiting Send")
-	}
 	if elapsed := time.Since(closeStarted); elapsed > time.Second {
 		t.Fatalf("Close took too long after force killing tracked process: %v", elapsed)
+	}
+	select {
+	case err := <-followup:
+		if err != context.Canceled {
+			t.Fatalf("Send(second) after Close = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not unblock the waiting follow-up")
 	}
 
 	select {
