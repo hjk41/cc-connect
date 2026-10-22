@@ -11,7 +11,10 @@ export RUNNER_TEMP="$sync_test_dir" GH_REPO=test/fork
 export GITHUB_STEP_SUMMARY="$sync_test_dir/summary"
 export UPSTREAM_URL="$sync_test_dir/upstream.git"
 export SYNC_TEST_GH_LOG="$sync_test_dir/gh.log"
+export SYNC_TEST_CI_COUNTER="$sync_test_dir/ci-counter"
+export SYNC_TEST_HEAD_SHA=deadbeef
 export SYNC_TEST_OPEN_PR=''
+export SYNC_TEST_CI_FAIL=''
 
 mkdir -p "$sync_test_dir/bin"
 cat > "$sync_test_dir/bin/gh" <<'MOCK'
@@ -20,8 +23,23 @@ set -euo pipefail
 printf '%s\n' "$*" >> "$SYNC_TEST_GH_LOG"
 case "$1 $2" in
   'pr list') if [ -n "$SYNC_TEST_OPEN_PR" ]; then echo 7; fi ;;
-  'pr create' | 'pr edit') ;;
-  'pr view') echo 'https://example.invalid/test/fork/pull/7' ;;
+  'pr create' | 'pr edit' | 'pr merge') ;;
+  'pr view')
+    case " $* " in
+      *" --json number "*) echo 7 ;;
+      *" --json url "*) echo 'https://example.invalid/test/fork/pull/7' ;;
+      *" --json headRefOid "*) printf '%s\n' "${SYNC_TEST_HEAD_SHA:-deadbeef}" ;;
+      *) exit 2 ;;
+    esac ;;
+  'workflow run')
+    n=$(cat "$SYNC_TEST_CI_COUNTER" 2>/dev/null || echo 0)
+    echo $((n + 1)) > "$SYNC_TEST_CI_COUNTER" ;;
+  'run list')
+    cat "$SYNC_TEST_CI_COUNTER" 2>/dev/null || echo 0 ;;
+  'run watch')
+    if [ "${SYNC_TEST_CI_FAIL:-}" = 1 ]; then exit 1; fi ;;
+  'run view')
+    printf '%s\n' "${SYNC_TEST_HEAD_SHA:-deadbeef}" ;;
   *) exit 2 ;;
 esac
 MOCK
@@ -48,6 +66,11 @@ run_sync() {
   (cd "$sync_test_dir/work" && bash "$script_dir/upstream-sync.sh")
 }
 
+reset_work_main() {
+  git -C "$sync_test_dir/work" checkout --quiet main
+  git -C "$sync_test_dir/work" reset --quiet --hard "$base_sha"
+}
+
 run_sync > "$sync_test_dir/output" 2>&1
 test ! -e "$SYNC_TEST_GH_LOG"
 if git --git-dir="$sync_test_dir/origin.git" show-ref --verify --quiet refs/heads/automation/upstream-sync; then
@@ -67,20 +90,62 @@ test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse main)" = "$base_sha"
 test "$(git -C "$sync_test_dir/work" rev-parse HEAD^1)" = "$base_sha"
 test "$(git -C "$sync_test_dir/work" rev-parse HEAD^2)" = "$upstream_sha"
 grep -q '^pr create ' "$SYNC_TEST_GH_LOG"
-echo 'PASS: sync preserves merge parents, opens a PR, and leaves main unchanged'
+grep -q '^workflow run ci.yml --ref automation/upstream-sync$' "$SYNC_TEST_GH_LOG"
+grep -q '^run watch 1 --exit-status$' "$SYNC_TEST_GH_LOG"
+grep -q '^pr merge 7 --merge$' "$SYNC_TEST_GH_LOG"
+grep -q 'Merged sync PR #7 after CI passed' "$GITHUB_STEP_SUMMARY"
+echo 'PASS: sync preserves merge parents, dispatches CI, and merges only after CI passes'
 
-git -C "$sync_test_dir/work" checkout --quiet main
-git -C "$sync_test_dir/work" reset --quiet --hard "$base_sha"
+reset_work_main
 export SYNC_TEST_OPEN_PR=7
 run_sync > "$sync_test_dir/output" 2>&1
 test "$(git --git-dir="$sync_test_dir/origin.git" rev-parse refs/heads/automation/upstream-sync)" = "$sync_sha"
 grep -q '^pr edit 7 ' "$SYNC_TEST_GH_LOG"
+grep -q '^run watch 2 --exit-status$' "$SYNC_TEST_GH_LOG"
+test "$(grep -c '^pr merge 7 --merge$' "$SYNC_TEST_GH_LOG")" = 2
 echo 'PASS: repeated sync reuses the existing merge and PR'
 
+printf 'fork-owned readme\n' > "$sync_test_dir/author/README.md"
+git -C "$sync_test_dir/author" add README.md
+git -C "$sync_test_dir/author" commit --quiet -m upstream-readme
+git -C "$sync_test_dir/author" push --quiet "$UPSTREAM_URL" main
+reset_work_main
+: > "$SYNC_TEST_GH_LOG"
+run_sync > "$sync_test_dir/output" 2>&1
+grep -q '^run watch 3 --exit-status$' "$SYNC_TEST_GH_LOG"
+if grep -q '^pr merge ' "$SYNC_TEST_GH_LOG"; then
+  echo 'FAIL: protected sync unexpectedly merged' >&2
+  exit 1
+fi
+grep -q 'Manual review required' "$GITHUB_STEP_SUMMARY"
+grep -q '^README.md$' "$GITHUB_STEP_SUMMARY"
+echo 'PASS: fork-owned files require review even when CI passes'
+
+printf 'ci failure\n' > "$sync_test_dir/author/ci-fail.txt"
+git -C "$sync_test_dir/author" add ci-fail.txt
+git -C "$sync_test_dir/author" commit --quiet -m upstream-ci-fail
+git -C "$sync_test_dir/author" push --quiet "$UPSTREAM_URL" main
+reset_work_main
+: > "$SYNC_TEST_GH_LOG"
+export SYNC_TEST_CI_FAIL=1
+if run_sync > "$sync_test_dir/output" 2>&1; then
+  echo 'FAIL: sync unexpectedly succeeded when CI failed' >&2
+  exit 1
+fi
+export SYNC_TEST_CI_FAIL=''
+grep -q '^run watch 4 --exit-status$' "$SYNC_TEST_GH_LOG"
+if grep -q '^pr merge ' "$SYNC_TEST_GH_LOG"; then
+  echo 'FAIL: sync merged even though CI failed' >&2
+  exit 1
+fi
+grep -q 'Upstream sync CI failed' "$GITHUB_STEP_SUMMARY"
+echo 'PASS: failed CI leaves the PR open and fails the sync run'
+
+sync_sha=$(git --git-dir="$sync_test_dir/origin.git" rev-parse refs/heads/automation/upstream-sync)
 printf 'upstream edit\n' > "$sync_test_dir/author/base.txt"
 git -C "$sync_test_dir/author" commit --quiet -am upstream-conflict
 git -C "$sync_test_dir/author" push --quiet "$UPSTREAM_URL" main
-git -C "$sync_test_dir/work" checkout --quiet main
+reset_work_main
 printf 'fork edit\n' > "$sync_test_dir/work/base.txt"
 git -C "$sync_test_dir/work" commit --quiet -am fork-conflict
 git -C "$sync_test_dir/work" push --quiet origin main

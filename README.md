@@ -31,7 +31,7 @@ Codex / Claude Code / Cursor / Devin / dsh / …
 
 This is the maintained **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)** fork of **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)**.
 
-We focus on Codex, Cursor, Devin, and DeepSeek Harness (dsh), improving conversation continuity, progress reporting, model selection, and permission handling. A daily workflow prepares upstream sync pull requests for review and testing.
+We focus on Codex, Cursor, Devin, and DeepSeek Harness (dsh), improving conversation continuity, progress reporting, model selection, and permission handling. A daily workflow syncs upstream `main`, runs CI on the merge, and merges automatically only when CI is green; changes to fork-owned files still wait for review.
 
 ## Get started
 

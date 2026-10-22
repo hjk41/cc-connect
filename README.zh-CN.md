@@ -31,7 +31,7 @@ Codex / Claude Code / Cursor / Devin / dsh / …
 
 这是基于 **[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)** 持续维护的 **[hjk41/cc-connect](https://github.com/hjk41/cc-connect)** 分支。
 
-我们重点改进 Codex、Cursor、Devin 和 DeepSeek Harness（dsh）的使用体验，包括连续对话、进度展示、模型选择和权限处理。每日工作流会创建或更新上游同步 PR，经审查和测试后合入。
+我们重点改进 Codex、Cursor、Devin 和 DeepSeek Harness（dsh）的使用体验，包括连续对话、进度展示、模型选择和权限处理。每日工作流会同步上游 `main`，在合并分支上运行 CI，仅当 CI 全绿时自动合入；涉及 fork 自有文件的改动仍需人工审查。
 
 ## 开始使用
 
