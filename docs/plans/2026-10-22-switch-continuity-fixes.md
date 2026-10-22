@@ -37,9 +37,11 @@ path. Several other switches have the same class of bug.
    This removes slash/card divergence.
 3. **Implement `ResumeModeApplier`** (`AppliesModeOnResume() bool { return true }`)
    for agents whose start/resume path already applies `a.mode`:
-   `claudecode`, `cursor`, `codex`, `devin` (ACP), `acp` generic (document
-   server caveat), `gemini`, `iflow`, `opencode`, `qoder`, `kimi`,
-   `antigravity`, `copilot`, `pi`.
+   `claudecode`, `cursor`, `codex`, `devin` (Devin-specific, after confirming
+   its ACP server honors `session/set_mode`), `gemini`, `iflow`, `opencode`,
+   `qoder`, `kimi`, `antigravity`, `copilot`, `pi`.
+   Do **not** add a blanket applier to the generic `acp` adapter; servers that
+   do not support `session/set_mode` need a separate capability check.
    DSH already implements it; do not change its log-rewrite path.
 4. **Pi `/reasoning`**: implement `ResumeReasoningApplier`; both JSON and RPC
    builders already combine `--session-id` with `--thinking`.
