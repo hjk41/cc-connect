@@ -6,6 +6,26 @@ import (
 	"testing"
 )
 
+func TestMsgModeChangedLive_AppliesFromNextTurn(t *testing.T) {
+	for _, tc := range []struct {
+		lang Language
+		want string
+	}{
+		{LangEnglish, "The current session will use it from the next turn."},
+		{LangChinese, "当前会话将从下一轮开始使用。"},
+		{LangTraditionalChinese, "目前會話將從下一輪開始使用。"},
+		{LangJapanese, "現在のセッションでは次のターンから使用します。"},
+		{LangSpanish, "La sesión actual lo usará a partir del próximo turno."},
+	} {
+		t.Run(string(tc.lang), func(t *testing.T) {
+			got := NewI18n(tc.lang).Tf(MsgModeChangedLive, "mode")
+			if !strings.Contains(got, tc.want) || !strings.Contains(got, "**mode**") {
+				t.Fatalf("live mode reply = %q, want next-turn wording %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestMsgReasoningDefaultAgentAgnostic(t *testing.T) {
 	for lang, text := range messages[MsgReasoningDefault] {
 		if strings.Contains(strings.ToLower(text), "codex") {

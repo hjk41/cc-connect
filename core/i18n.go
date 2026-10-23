@@ -994,11 +994,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Las nuevas sesiones usarán este modo.",
 	},
 	MsgModeChangedLive: {
-		LangEnglish:            "🔄 Permission mode switched to **%s**. Current session updated immediately.",
-		LangChinese:            "🔄 权限模式已切换为 **%s**，当前会话已立即更新。",
-		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，目前會話已立即更新。",
-		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。現在のセッションに即座に適用しました。",
-		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. La sesión actual se actualizó inmediatamente.",
+		LangEnglish:            "🔄 Permission mode switched to **%s**. The current session will use it from the next turn.",
+		LangChinese:            "🔄 权限模式已切换为 **%s**，当前会话将从下一轮开始使用。",
+		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，目前會話將從下一輪開始使用。",
+		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。現在のセッションでは次のターンから使用します。",
+		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. La sesión actual lo usará a partir del próximo turno.",
 	},
 	MsgModeChangedOnResume: {
 		LangEnglish:            "🔄 Permission mode switched to **%s**. It applies on the next message in this conversation.",

@@ -151,7 +151,6 @@ type appServerSession struct {
 	workDir        string
 	model          string
 	effort         string
-	mode           string
 	baseURL        string
 	modelProvider  string
 	extraEnv       []string
@@ -194,6 +193,12 @@ type appServerSession struct {
 	runtimeMu sync.RWMutex
 	usage     *core.UsageReport
 	context   *core.ContextUsage
+
+	// Permission state is guarded by runtimeMu and snapshotted together by Send.
+	mode                 string
+	effectiveSandboxTier string
+	lastWorkspacePolicy  map[string]any
+	turnSandboxPolicy    map[string]any
 }
 
 const (
@@ -369,7 +374,10 @@ func (s *appServerSession) initialize() error {
 }
 
 func (s *appServerSession) ensureThread(resumeID string) error {
-	spec, err := resolveCodexMode(s.mode)
+	s.runtimeMu.RLock()
+	mode := s.mode
+	s.runtimeMu.RUnlock()
+	spec, err := resolveCodexMode(mode)
 	if err != nil {
 		return err
 	}
@@ -386,6 +394,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 			return fmt.Errorf("codex app-server resume returned empty thread id")
 		}
 		resp.logEffectivePermissions("thread/resume", spec)
+		s.applyThreadSandbox(resp.appServerPermissionState)
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 		s.threadID.Store(resp.Thread.ID)
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
@@ -400,6 +409,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		return fmt.Errorf("codex app-server start returned empty thread id")
 	}
 	resp.logEffectivePermissions("thread/start", spec)
+	s.applyThreadSandbox(resp.appServerPermissionState)
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 	s.threadID.Store(resp.Thread.ID)
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
@@ -545,14 +555,19 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	if effort := s.GetReasoningEffort(); effort != "" {
 		params["effort"] = effort
 	}
-	spec, err := resolveCodexMode(s.mode)
+	s.runtimeMu.RLock()
+	mode := s.mode
+	sandboxPolicy := cloneSandboxPolicy(s.turnSandboxPolicy)
+	s.runtimeMu.RUnlock()
+	spec, err := resolveCodexMode(mode)
 	if err != nil {
 		return err
 	}
 	params["approvalPolicy"] = spec.ApprovalPolicy
 	params["approvalsReviewer"] = spec.Reviewer
-	// Keep the thread sandbox, including configured network access. A per-turn
-	// sandboxPolicy would need to preserve all roots/network/temp settings.
+	if sandboxPolicy != nil {
+		params["sandboxPolicy"] = sandboxPolicy
+	}
 
 	var resp turnStartResponse
 	if err := s.request("turn/start", params, &resp); err != nil {

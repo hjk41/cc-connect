@@ -6124,7 +6124,7 @@ func TestCmdMode_AppliesLiveModeWithoutReset(t *testing.T) {
 	if len(session.GetHistory(0)) != 1 {
 		t.Fatalf("history len = %d, want 1", len(session.GetHistory(0)))
 	}
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "Current session updated immediately.") {
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "The current session will use it from the next turn.") {
 		t.Fatalf("sent = %v, want live mode update reply", p.sent)
 	}
 	if got := agent.GetMode(); got != "yolo" {

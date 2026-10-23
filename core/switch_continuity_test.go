@@ -80,8 +80,8 @@ func TestModeSelection_SlashAndCardContinuity(t *testing.T) {
 				if process.closeCount() != wantCloses || session.GetAgentSessionID() != wantID || len(session.GetHistory(0)) != wantHistory {
 					t.Fatalf("closes=%d id=%q history=%v", process.closeCount(), session.GetAgentSessionID(), session.GetHistory(0))
 				}
-				if tc.live && len(state.pendingMessages) != 1 {
-					t.Fatal("queued work dropped")
+				if tc.live && (e.interactiveStates[e.interactiveKeyForSessionKey("test:u")] != state || state.agentSession != process || len(state.pendingMessages) != 1) {
+					t.Fatal("live switch cleaned up interactive state, replaced the running session or dropped queued work")
 				}
 				if !tc.live && len(state.pendingMessages) != 0 {
 					t.Fatal("restart did not clean queue")
