@@ -144,7 +144,10 @@ func TestAppServerSession_SetLiveMode_SandboxOverridesPreserveInFlightTurn(t *te
 
 func TestAppServerSession_SetLiveMode_SameTierBeforeTurnKeepsOverride(t *testing.T) {
 	s, requests := newLiveModeTestSession(t, "workspace", liveWorkspacePolicy, false)
-	if !s.SetLiveMode("suggest") || !s.SetLiveMode("suggest") {
+	if !s.SetLiveMode("suggest") {
+		t.Fatal("first same-tier switch rejected")
+	}
+	if !s.SetLiveMode("suggest") {
 		t.Fatal("repeated same-tier switch rejected")
 	}
 	if err := s.Send("next", "msg", nil, nil); err != nil {
@@ -320,7 +323,9 @@ func TestAppServerSession_SetLiveMode_ConcurrentSendSnapshots(t *testing.T) {
 			assertLiveTurnPermissions(t, req, "never", "user", `{"type":"dangerFullAccess"}`)
 		case "workspaceWrite":
 			approval, reviewer := req.Params["approvalPolicy"], req.Params["approvalsReviewer"]
-			if !((approval == "on-request" && (reviewer == "user" || reviewer == "auto_review")) || (approval == "never" && reviewer == "user")) {
+			valid := (approval == "on-request" && (reviewer == "user" || reviewer == "auto_review")) ||
+				(approval == "never" && reviewer == "user")
+			if !valid {
 				t.Fatalf("inconsistent workspace permissions: %#v", req.Params)
 			}
 			assertLiveTurnPermissions(t, req, approval.(string), reviewer.(string), liveWorkspacePolicy)

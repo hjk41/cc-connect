@@ -24,16 +24,16 @@ func (s *appServerSession) SetLiveMode(mode string) bool {
 	}
 
 	var policy map[string]any
-	switch {
-	case spec.Sandbox == s.effectiveSandboxTier:
+	switch spec.Sandbox {
+	case s.effectiveSandboxTier:
 		// Keep an explicit override: the thread may still be on its original
 		// native tier if no turn has carried the policy yet.
 		policy = cloneSandboxPolicy(s.turnSandboxPolicy)
-	case spec.Sandbox == "read-only":
+	case "read-only":
 		policy = map[string]any{"type": "readOnly", "networkAccess": false}
-	case spec.Sandbox == "danger-full-access":
+	case "danger-full-access":
 		policy = map[string]any{"type": "dangerFullAccess"}
-	case spec.Sandbox == "workspace-write":
+	case "workspace-write":
 		if s.lastWorkspacePolicy == nil {
 			// Never guess the configured roots, network access or tmp flags.
 			return false
