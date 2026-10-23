@@ -3,6 +3,7 @@ package codex
 import (
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,6 +20,7 @@ type appServerElicitationParams struct {
 	URL             string          `json:"url"`
 	Title           string          `json:"title"`
 	Description     string          `json:"description"`
+	Meta            map[string]any  `json:"_meta"`
 }
 
 func (s *appServerSession) handleElicitationRequest(rawID, paramsRaw json.RawMessage) {
@@ -26,6 +28,10 @@ func (s *appServerSession) handleElicitationRequest(rawID, paramsRaw json.RawMes
 	if err := json.Unmarshal(paramsRaw, &params); err != nil {
 		slog.Warn("codex app-server: declining malformed elicitation", "error", err)
 		s.replyElicitation(rawID, map[string]any{"action": "decline"})
+		return
+	}
+	if params.Meta["codex_approval_kind"] == "mcp_tool_call" {
+		s.promptMCPToolApproval(rawID, params)
 		return
 	}
 	form := false
@@ -48,6 +54,114 @@ func (s *appServerSession) handleElicitationRequest(rawID, paramsRaw json.RawMes
 		return
 	}
 	s.promptElicitation(rawID, params, form)
+}
+
+func (s *appServerSession) promptMCPToolApproval(rawID json.RawMessage, params appServerElicitationParams) {
+	toolName := mcpApprovalToolName(params)
+	var names []string
+	for _, name := range []string{params.ServerName, toolName} {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+	displayName := "MCP"
+	if len(names) > 0 {
+		displayName += " " + strings.Join(names, "/")
+	}
+	event := core.Event{
+		Type: core.EventPermissionRequest, RequestID: string(rawID), SessionID: params.ThreadID,
+		ToolName: displayName, ToolInput: mcpToolApprovalInput(params, toolName),
+		ToolInputRaw: map[string]any{
+			"serverName": params.ServerName, "threadId": params.ThreadID, "turnId": params.TurnID, "mode": params.Mode,
+			"toolName": toolName, "toolParams": params.Meta["tool_params"], "_meta": params.Meta,
+		},
+	}
+	s.promptElicitationApproval(rawID, event, func(result core.PermissionResult) map[string]any {
+		action := "decline"
+		if strings.EqualFold(result.Behavior, "allow") {
+			action = "accept"
+		}
+		return map[string]any{"action": action}
+	})
+}
+
+// mcpApprovalToolName resolves the MCP tool name for the permission card.
+// Codex 0.163 does not put tool_name in _meta for MCP tool approvals; the
+// raw name is embedded in the approval message. Prefer explicit metadata,
+// then parse the quoted name from the message, then fall back to tool_title.
+func mcpApprovalToolName(params appServerElicitationParams) string {
+	if name, _ := params.Meta["tool_name"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	for _, marker := range []string{`tool "`, `tool '`} {
+		i := strings.Index(params.Message, marker)
+		if i < 0 {
+			continue
+		}
+		quote := marker[len(marker)-1:]
+		rest := params.Message[i+len(marker):]
+		if j := strings.Index(rest, quote); j > 0 {
+			return strings.TrimSpace(rest[:j])
+		}
+	}
+	if title, _ := params.Meta["tool_title"].(string); strings.TrimSpace(title) != "" {
+		return strings.TrimSpace(title)
+	}
+	return ""
+}
+
+func mcpToolApprovalInput(params appServerElicitationParams, toolName string) string {
+	var lines []string
+	if params.Message != "" {
+		lines = append(lines, params.Message)
+	}
+	if params.ServerName != "" {
+		lines = append(lines, "Server: "+params.ServerName)
+	}
+	if toolName != "" {
+		lines = append(lines, "Tool: "+toolName)
+	}
+	for _, key := range []string{"tool_title", "tool_description"} {
+		if text, _ := params.Meta[key].(string); text != "" {
+			lines = append(lines, text)
+		}
+	}
+	if display, ok := params.Meta["tool_params_display"].([]any); ok {
+		for _, entry := range display {
+			param, ok := entry.(map[string]any)
+			if !ok {
+				continue
+			}
+			name, _ := param["display_name"].(string)
+			if name == "" {
+				name, _ = param["name"].(string)
+			}
+			lines = append(lines, name+": "+elicitationParamValue(param["value"]))
+		}
+	} else if toolParams, ok := params.Meta["tool_params"].(map[string]any); ok {
+		keys := make([]string, 0, len(toolParams))
+		for key := range toolParams {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			lines = append(lines, key+": "+elicitationParamValue(toolParams[key]))
+		}
+	}
+	return strings.Join(lines, "\n\n")
+}
+
+func elicitationParamValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	// Preserve empty objects, arrays and null, which may be meaningful arguments.
+	data, err := json.Marshal(value)
+	if err != nil {
+		slog.Warn("codex app-server: format elicitation parameter failed", "error", err)
+		return ""
+	}
+	return string(data)
 }
 
 func (s *appServerSession) promptElicitation(rawID json.RawMessage, params appServerElicitationParams, form bool) {
@@ -76,6 +190,13 @@ func (s *appServerSession) promptElicitation(rawID json.RawMessage, params appSe
 		rawInput["url"] = params.URL
 	}
 	event.ToolInput, event.ToolInputRaw = text, rawInput
+	s.promptElicitationApproval(rawID, event, func(result core.PermissionResult) map[string]any {
+		return elicitationResponse(params.Mode, question, result)
+	})
+}
+
+func (s *appServerSession) promptElicitationApproval(rawID json.RawMessage, event core.Event, response func(core.PermissionResult) map[string]any) {
+	requestID := event.RequestID
 	ch := make(chan core.PermissionResult, 1)
 	s.approvalsMu.Lock()
 	if s.pendingApprovals == nil {
@@ -97,8 +218,7 @@ func (s *appServerSession) promptElicitation(rawID json.RawMessage, params appSe
 		s.approvalsMu.Lock()
 		delete(s.pendingApprovals, requestID)
 		s.approvalsMu.Unlock()
-		response := elicitationResponse(params.Mode, question, result)
-		s.replyElicitation(rawID, response)
+		s.replyElicitation(rawID, response(result))
 	}()
 }
 
