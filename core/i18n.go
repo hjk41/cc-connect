@@ -235,6 +235,7 @@ const (
 	MsgModeChangedLive             MsgKey = "mode_changed_live"
 	MsgModeChangedOnResume         MsgKey = "mode_changed_on_resume"
 	MsgModeNotSupported            MsgKey = "mode_not_supported"
+	MsgModeInvalid                 MsgKey = "mode_invalid"
 	MsgSessionRestarting           MsgKey = "session_restarting"
 	MsgSessionNotStarted           MsgKey = "session_not_started"
 	MsgUntitled                    MsgKey = "untitled"
@@ -1005,6 +1006,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "🔄 權限模式已切換為 **%s**，下一則訊息將在目前會話中使用此模式。",
 		LangJapanese:           "🔄 権限モードを **%s** に切り替えました。この会話の次のメッセージから有効になります。",
 		LangSpanish:            "🔄 Modo de permisos cambiado a **%s**. Se aplica en el siguiente mensaje de esta conversación.",
+	},
+	MsgModeInvalid: {
+		LangEnglish:            "Unknown or unsupported permission mode %q: %v. Use /mode to list available modes.",
+		LangChinese:            "未知或不支持的权限模式 %q：%v。使用 /mode 查看可用模式。",
+		LangTraditionalChinese: "未知或不支援的權限模式 %q：%v。使用 /mode 查看可用模式。",
+		LangJapanese:           "不明または未対応の権限モード %q：%v。/mode で利用可能なモードを確認してください。",
+		LangSpanish:            "Modo de permisos desconocido o no compatible %q: %v. Usa /mode para ver los modos disponibles.",
 	},
 	MsgModeNotSupported: {
 		LangEnglish:            "This agent does not support permission mode switching.",

@@ -2976,16 +2976,43 @@ func continuityCUJTurn(env *cujEnv, prompt, want string) {
 	env.waitFor("turn complete", 2*time.Second, func() bool { return !env.activeSession("test:alice").Busy() })
 }
 
-func TestCUJ_C7_ModeSwitchPreservesHistory(t *testing.T) {
-	env := newContinuityCUJEnv(t)
-	continuityCUJTurn(env, "remember mode-token", "recall=mode-token id=continuity-1")
-	env.userSends("alice", "/mode yolo")
-	continuityCUJTurn(env, "recall", "recall=mode-token id=continuity-1 mode=yolo")
-	env.plat.clearSent()
-	env.userSends("alice", "/history")
-	if !strings.Contains(strings.Join(env.plat.getSent(), "\n"), "remember mode-token") {
-		t.Fatal("/mode erased visible history")
+type validatingContinuityCUJAgent struct{ *continuityCUJAgent }
+
+func (a *validatingContinuityCUJAgent) ValidateMode(mode string) error {
+	if mode == "invalid" {
+		return errors.New("unsupported permission mode")
 	}
+	return nil
+}
+
+func TestCUJ_C7_ModeSwitchPreservesHistory(t *testing.T) {
+	t.Run("valid mode resumes history", func(t *testing.T) {
+		env := newContinuityCUJEnv(t)
+		continuityCUJTurn(env, "remember mode-token", "recall=mode-token id=continuity-1")
+		env.userSends("alice", "/mode yolo")
+		continuityCUJTurn(env, "recall", "recall=mode-token id=continuity-1 mode=yolo")
+		env.plat.clearSent()
+		env.userSends("alice", "/history")
+		if !strings.Contains(strings.Join(env.plat.getSent(), "\n"), "remember mode-token") {
+			t.Fatal("/mode erased visible history")
+		}
+	})
+	t.Run("invalid mode preserves conversation", func(t *testing.T) {
+		env := newContinuityCUJEnv(t)
+		env.engine.agent = &validatingContinuityCUJAgent{env.engine.agent.(*continuityCUJAgent)}
+		continuityCUJTurn(env, "remember invalid-mode-token", "recall=invalid-mode-token id=continuity-1")
+		env.plat.clearSent()
+		env.userSends("alice", "/mode invalid")
+		if got := strings.Join(env.plat.getSent(), "\n"); !strings.Contains(got, "Unknown or unsupported permission mode") {
+			t.Fatalf("invalid mode reply = %q", got)
+		}
+		continuityCUJTurn(env, "recall", "recall=invalid-mode-token id=continuity-1 mode=default")
+		env.plat.clearSent()
+		env.userSends("alice", "/history")
+		if !strings.Contains(strings.Join(env.plat.getSent(), "\n"), "remember invalid-mode-token") {
+			t.Fatal("invalid mode discarded visible history")
+		}
+	})
 }
 
 func testCUJNewSlashArchivesPreviousConversation(t *testing.T) {

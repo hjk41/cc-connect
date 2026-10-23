@@ -39,7 +39,7 @@ type Agent struct {
 	modelPinned     bool // SetModel overrides the active provider default
 	model           string
 	reasoningEffort string
-	mode            string // "suggest" | "auto-edit" | "full-auto" | "yolo"
+	mode            string // canonical permission mode key
 	backend         string // "exec" | "app_server"
 	appServerURL    string
 	codexHome       string
@@ -67,8 +67,12 @@ func New(opts map[string]any) (core.Agent, error) {
 	codexHome, _ := opts["codex_home"].(string)
 	systemPrompt, _ := opts["system_prompt"].(string)
 	appendPrompt, _ := opts["append_system_prompt"].(string)
-	mode = normalizeMode(mode)
 	backend = normalizeBackend(backend)
+	spec, err := resolveCodexBackendMode(mode, backend)
+	if err != nil {
+		return nil, err
+	}
+	mode = spec.Key
 	appServerURL = normalizeAppServerURL(appServerURL)
 
 	cmd, cliExtraArgs := core.ParseCmdOpts(opts, "")
@@ -137,19 +141,6 @@ func normalizeAppServerURL(raw string) string {
 		return "stdio://"
 	}
 	return url
-}
-
-func normalizeMode(raw string) string {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "auto-edit", "autoedit", "auto_edit", "edit":
-		return "auto-edit"
-	case "full-auto", "fullauto", "full_auto", "auto":
-		return "full-auto"
-	case "yolo", "bypass", "dangerously-bypass":
-		return "yolo"
-	default:
-		return "suggest"
-	}
 }
 
 func normalizeReasoningEffort(raw string) string {
@@ -546,6 +537,10 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	provName, provAPIKey, provWireAPI, provHeaders := a.activeProviderCodexConfig()
 	a.mu.Unlock()
 
+	if _, err := resolveCodexBackendMode(mode, backend); err != nil {
+		return nil, err
+	}
+
 	if provName != "" {
 		if err := ensureCodexProviderConfig(codexHome, provName, baseURL, provWireAPI, provHeaders); err != nil {
 			slog.Warn("codex: failed to write provider config", "provider", provName, "error", err)
@@ -601,7 +596,12 @@ func (a *Agent) AppliesModeOnResume() bool { return true }
 func (a *Agent) SetMode(mode string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.mode = normalizeMode(mode)
+	spec, err := resolveCodexBackendMode(mode, a.backend)
+	if err != nil || strings.TrimSpace(mode) == "" {
+		slog.Warn("codex: rejected permission mode", "mode", mode, "error", err)
+		return
+	}
+	a.mode = spec.Key
 	slog.Info("codex: approval mode changed", "mode", a.mode)
 }
 
@@ -896,36 +896,6 @@ func (a *Agent) activeProviderCodexConfig() (name string, apiKey string, wireAPI
 		return
 	}
 	return p.Name, p.APIKey, p.CodexWireAPI, p.CodexHTTPHeaders
-}
-
-// PermissionModes returns the supported codex permission modes.
-//
-// Behavior depends on backend:
-//   - exec backend (default): codex exec has no approval IPC, so all modes run
-//     with approval_policy=never. Sandbox tier is what controls access. The
-//     "suggest" label refers to the *intent* (read-only safety) — the CLI does
-//     not pop interactive approval prompts on this backend.
-//   - app_server backend: "suggest" enables real interactive approval requests
-//     (execCommandApproval / applyPatchApproval / permissionsApproval).
-//
-// Note: auto-edit and full-auto produce the same flags on the exec backend
-// (codex CLI has no separate "ask for shell only" mode); auto-edit is kept as
-// an alias for backward compatibility with existing user configs.
-func (a *Agent) PermissionModes() []core.PermissionModeInfo {
-	return []core.PermissionModeInfo{
-		{Key: "suggest", Name: "Suggest", NameZh: "建议",
-			Desc:   "Read-only sandbox; on exec backend no prompts, on app_server backend asks for every tool call",
-			DescZh: "只读沙箱；exec 后端不弹审批，app_server 后端每次工具调用都会询问"},
-		{Key: "auto-edit", Name: "Auto Edit", NameZh: "自动编辑",
-			Desc:   "Workspace-write sandbox, no approval prompts (alias of Full Auto)",
-			DescZh: "工作区可写沙箱，不弹审批（等同于全自动）"},
-		{Key: "full-auto", Name: "Full Auto", NameZh: "全自动",
-			Desc:   "Workspace-write sandbox, no approval prompts",
-			DescZh: "工作区可写沙箱，不弹审批"},
-		{Key: "yolo", Name: "YOLO", NameZh: "YOLO 模式",
-			Desc:   "Bypass all approvals and sandbox (DANGEROUS)",
-			DescZh: "跳过所有审批和沙箱（危险）"},
-	}
 }
 
 // AddAllowedTools updates the allowlist for sessions started after this call.

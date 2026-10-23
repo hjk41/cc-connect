@@ -61,7 +61,10 @@ func TestBuildExecArgs_IncludesReasoningEffort(t *testing.T) {
 		t.Fatalf("newCodexSession: %v", err)
 	}
 
-	args := cs.buildExecArgs("hello", nil)
+	args, err := cs.buildExecArgs("hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	want := []string{
 		"exec",
@@ -95,7 +98,10 @@ func TestBuildExecArgs_IncludesBaseURL(t *testing.T) {
 		t.Fatalf("newCodexSession: %v", err)
 	}
 
-	args := cs.buildExecArgs("hello", nil)
+	args, err := cs.buildExecArgs("hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !containsSequence(args, []string{"-c", `openai_base_url="https://custom.api.example.com"`}) {
 		t.Fatalf("args missing openai_base_url config flag: %v", args)
@@ -108,7 +114,10 @@ func TestBuildExecArgs_IncludesModelProvider(t *testing.T) {
 		t.Fatalf("newCodexSession: %v", err)
 	}
 
-	args := cs.buildExecArgs("hello", nil)
+	args, err := cs.buildExecArgs("hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if !containsSequence(args, []string{"-c", `model_provider="shengsuanyun"`}) {
 		t.Fatalf("args missing model_provider config flag: %v", args)
@@ -124,7 +133,10 @@ func TestBuildExecArgs_ResumeOmitsCdFlag(t *testing.T) {
 		t.Fatalf("newCodexSession: %v", err)
 	}
 
-	args := cs.buildExecArgs("hello", nil)
+	args, err := cs.buildExecArgs("hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// codex exec resume does not support --cd; verify it's absent.
 	for i, arg := range args {
@@ -163,7 +175,10 @@ func TestBuildExecArgs_ModeMapping(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newCodexSession: %v", err)
 			}
-			args := cs.buildExecArgs("hi", nil)
+			args, err := cs.buildExecArgs("hi", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			if tc.wantSandbox != "" {
 				if !containsSequence(args, []string{"--sandbox", tc.wantSandbox}) {
@@ -227,7 +242,10 @@ func TestBuildExecArgs_ResumeUsesSandboxModeConfigOverride(t *testing.T) {
 			if err != nil {
 				t.Fatalf("newCodexSession: %v", err)
 			}
-			args := cs.buildExecArgs("hi", nil)
+			args, err := cs.buildExecArgs("hi", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 
 			// Sanity: this is a resume invocation.
 			if !containsSequence(args, []string{"exec", "resume", "--skip-git-repo-check"}) {

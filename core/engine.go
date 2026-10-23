@@ -10928,7 +10928,11 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 	}
 
 	target := strings.ToLower(args[0])
-	appliedLive := e.applyModeSelection(msg.SessionKey, sessions, agent, switcher, target)
+	appliedLive, err := e.applyModeSelection(msg.SessionKey, sessions, agent, switcher, target)
+	if err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgModeInvalid, target, err))
+		return
+	}
 	newMode := switcher.GetMode()
 
 	modes := switcher.PermissionModes()
@@ -10957,20 +10961,36 @@ func (e *Engine) cmdMode(p Platform, msg *Message, args []string) {
 
 // applyModeSelection keeps the running turn on live success. Otherwise it
 // restarts the process, preserving conversations that accept a mode on resume.
-func (e *Engine) applyModeSelection(sessionKey string, sessions *SessionManager, agent Agent, switcher ModeSwitcher, mode string) bool {
+func (e *Engine) applyModeSelection(sessionKey string, sessions *SessionManager, agent Agent, switcher ModeSwitcher, mode string) (bool, error) {
+	if validator, ok := agent.(ModeValidator); ok {
+		if err := validator.ValidateMode(mode); err != nil {
+			return false, err
+		}
+	}
 	switcher.SetMode(mode)
+	// A session-wide grant belongs to the previous permission mode, including
+	// when an agent can keep its process alive across the change.
+	iKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state := e.interactiveStates[iKey]
+	e.interactiveMu.Unlock()
+	if state != nil {
+		state.mu.Lock()
+		state.approveAll = false
+		state.mu.Unlock()
+	}
 	if e.applyLiveModeChange(sessionKey, switcher.GetMode()) {
-		return true
+		return true, nil
 	}
 	e.cleanupInteractiveState(e.interactiveKeyForSessionKey(sessionKey))
 	if applier, ok := agent.(ResumeModeApplier); ok && applier.AppliesModeOnResume() {
-		return false
+		return false, nil
 	}
 	s := sessions.GetOrCreateActive(sessionKey)
 	s.SetAgentSessionID("", "")
 	s.ClearHistory()
 	sessions.Save()
-	return false
+	return false, nil
 }
 
 func (e *Engine) modeUsageText(modes []PermissionModeInfo) string {
@@ -13263,7 +13283,9 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		if !ok {
 			return
 		}
-		e.applyModeSelection(sessionKey, sessions, agent, switcher, strings.ToLower(args))
+		if _, err := e.applyModeSelection(sessionKey, sessions, agent, switcher, strings.ToLower(args)); err != nil {
+			slog.Warn("mode card: invalid permission mode", "mode", args, "error", err)
+		}
 
 	case "/lang":
 		if args == "" {

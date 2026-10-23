@@ -1717,12 +1717,15 @@ app_secret = "your-feishu-app-secret"
 #
 # [projects.agent.options]
 # work_dir = "/path/to/project"
-# mode = "suggest"  # "suggest" | "auto-edit" | "full-auto" | "yolo"
+# mode = "suggest"  # "suggest" | "workspace" | "auto-review" | "full-auto" | "yolo"
 #
 # Mode options / 模式说明:
-# - "suggest":   ask permission for every tool call (default, safest) / 每次调用都需确认（默认，最安全）
-# - "auto-edit": auto-approve file edits, ask for shell commands / 文件编辑自动通过，Shell 命令仍需确认
-# - "full-auto": auto-approve everything with workspace sandbox / 全部自动通过，工作区沙箱保护
+# - "suggest":   read-only; app_server asks when approval is needed, exec never prompts (default) / 只读；app_server 需要审批时询问，exec 不弹审批（默认）
+# - "workspace": workspace-write, user reviews approval requests (app_server only) / 工作区可写，用户审批（仅 app_server）
+# - "auto-review": workspace-write, Codex reviews approval requests (app_server only) / 工作区可写，Codex 自动审批（仅 app_server）
+# - "full-auto": legacy workspace-write, never prompts; denies actions requiring approval / 兼容模式：工作区可写，不弹审批，需要审批的操作直接拒绝
+# - "auto-edit" / "auto": aliases of legacy full-auto / 兼容模式 full-auto 的别名
+# - "approve-for-me": alias of auto-review / auto-review 的别名
 # - "yolo":      bypass all approvals and sandbox (dangerous) / 跳过所有审批和沙箱（危险）
 #
 # Optional: specify a model / 可选：指定模型

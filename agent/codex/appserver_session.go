@@ -42,6 +42,7 @@ type initResponse struct {
 }
 
 type threadStartResponse struct {
+	appServerPermissionState
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
@@ -51,6 +52,7 @@ type threadStartResponse struct {
 }
 
 type threadResumeResponse struct {
+	appServerPermissionState
 	Cwd             string  `json:"cwd"`
 	Model           string  `json:"model"`
 	ReasoningEffort *string `json:"reasoningEffort"`
@@ -204,6 +206,10 @@ func newAppServerSession(
 	url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string,
 	extraEnv []string, codexHome, systemPrompt, appendPrompt string, allowedTools []string,
 ) (*appServerSession, error) {
+	spec, err := resolveCodexMode(mode)
+	if err != nil {
+		return nil, err
+	}
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
 		allowedTools:     append([]string(nil), allowedTools...),
@@ -213,7 +219,7 @@ func newAppServerSession(
 		workDir:          workDir,
 		model:            model,
 		effort:           effort,
-		mode:             mode,
+		mode:             spec.Key,
 		baseURL:          baseURL,
 		modelProvider:    modelProvider,
 		extraEnv:         append([]string(nil), extraEnv...),
@@ -363,8 +369,12 @@ func (s *appServerSession) initialize() error {
 }
 
 func (s *appServerSession) ensureThread(resumeID string) error {
+	spec, err := resolveCodexMode(s.mode)
+	if err != nil {
+		return err
+	}
+	params := s.threadRequestParams(spec)
 	if resumeID != "" && resumeID != core.ContinueSession {
-		params := s.threadRequestParams()
 		params["threadId"] = resumeID
 		params["persistExtendedHistory"] = true
 
@@ -375,6 +385,7 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		if resp.Thread.ID == "" {
 			return fmt.Errorf("codex app-server resume returned empty thread id")
 		}
+		resp.logEffectivePermissions("thread/resume", spec)
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 		s.threadID.Store(resp.Thread.ID)
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
@@ -382,19 +393,20 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	}
 
 	var resp threadStartResponse
-	if err := s.request("thread/start", s.threadRequestParams(), &resp); err != nil {
+	if err := s.request("thread/start", params, &resp); err != nil {
 		return err
 	}
 	if resp.Thread.ID == "" {
 		return fmt.Errorf("codex app-server start returned empty thread id")
 	}
+	resp.logEffectivePermissions("thread/start", spec)
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 	s.threadID.Store(resp.Thread.ID)
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
 }
 
-func (s *appServerSession) threadRequestParams() map[string]any {
+func (s *appServerSession) threadRequestParams(spec codexModeSpec) map[string]any {
 	params := map[string]any{
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": false,
@@ -402,24 +414,10 @@ func (s *appServerSession) threadRequestParams() map[string]any {
 	if model := s.GetModel(); model != "" {
 		params["model"] = model
 	}
-	if approval, sandbox := appServerModeSettings(s.mode); approval != "" {
-		params["approvalPolicy"] = approval
-		if sandbox != "" {
-			params["sandbox"] = sandbox
-		}
-	}
+	params["approvalPolicy"] = spec.ApprovalPolicy
+	params["sandbox"] = spec.Sandbox
+	params["approvalsReviewer"] = spec.Reviewer
 	return params
-}
-
-func appServerModeSettings(mode string) (approval string, sandbox string) {
-	switch normalizeMode(mode) {
-	case "auto-edit", "full-auto":
-		return "never", "workspace-write"
-	case "yolo":
-		return "never", "danger-full-access"
-	default:
-		return "on-request", "read-only"
-	}
 }
 
 func (s *appServerSession) applyThreadRuntimeState(workDir, model string, effort *string) {
@@ -547,9 +545,14 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	if effort := s.GetReasoningEffort(); effort != "" {
 		params["effort"] = effort
 	}
-	if approval, _ := appServerModeSettings(s.mode); approval != "" {
-		params["approvalPolicy"] = approval
+	spec, err := resolveCodexMode(s.mode)
+	if err != nil {
+		return err
 	}
+	params["approvalPolicy"] = spec.ApprovalPolicy
+	params["approvalsReviewer"] = spec.Reviewer
+	// Keep the thread sandbox, including configured network access. A per-turn
+	// sandboxPolicy would need to preserve all roots/network/temp settings.
 
 	var resp turnStartResponse
 	if err := s.request("turn/start", params, &resp); err != nil {

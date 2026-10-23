@@ -639,6 +639,12 @@ type ModeSwitcher interface {
 	PermissionModes() []PermissionModeInfo
 }
 
+// ModeValidator optionally rejects unknown or unsupported permission modes
+// before callers change agent or session state.
+type ModeValidator interface {
+	ValidateMode(mode string) error
+}
+
 // WorkspaceAgentOptionSnapshotter is an optional interface for agents that can
 // export reusable constructor options needed to recreate an equivalent agent in
 // a different workspace. Snapshot values should omit work_dir; the caller is

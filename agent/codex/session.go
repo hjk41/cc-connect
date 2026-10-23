@@ -92,13 +92,17 @@ func prependCodexPromptPreamble(prompt string, preamble string) string {
 }
 
 func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string) (*codexSession, error) {
+	spec, err := resolveCodexBackendMode(mode, "exec")
+	if err != nil {
+		return nil, err
+	}
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &codexSession{
 		workDir:        workDir,
 		model:          model,
 		effort:         effort,
-		mode:           mode,
+		mode:           spec.Key,
 		baseURL:        baseURL,
 		modelProvider:  modelProvider,
 		cmd:            cliBin,
@@ -153,7 +157,10 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 	if !isResume {
 		prompt = prependCodexPromptPreamble(prompt, cs.promptPreamble)
 	}
-	args := cs.buildExecArgs(prompt, imagePaths)
+	args, err := cs.buildExecArgs(prompt, imagePaths)
+	if err != nil {
+		return err
+	}
 	if len(cs.cliExtraArgs) > 0 {
 		args = append(append([]string{}, cs.cliExtraArgs...), args...)
 	}
@@ -276,7 +283,11 @@ func (cs *codexSession) stageImages(prompt string, images []core.ImageAttachment
 	return prompt, imagePaths, nil
 }
 
-func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []string {
+func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) ([]string, error) {
+	spec, err := resolveCodexBackendMode(cs.mode, "exec")
+	if err != nil {
+		return nil, err
+	}
 	tid := cs.CurrentSessionID()
 	isResume := tid != ""
 
@@ -309,21 +320,15 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 	// For real interactive approvals (suggest semantics), users must opt into
 	// the `app_server` backend, which handles execCommandApproval /
 	// applyPatchApproval / permissionsApproval over JSON-RPC.
-	switch cs.mode {
-	case "auto-edit", "full-auto":
-		if isResume {
-			args = append(args, "-c", `sandbox_mode="workspace-write"`, "-c", `approval_policy="never"`)
-		} else {
-			args = append(args, "--sandbox", "workspace-write", "-c", `approval_policy="never"`)
-		}
-	case "yolo":
+	if spec.Sandbox == "danger-full-access" {
 		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-	default: // "suggest"
+	} else {
 		if isResume {
-			args = append(args, "-c", `sandbox_mode="read-only"`, "-c", `approval_policy="never"`)
+			args = append(args, "-c", fmt.Sprintf("sandbox_mode=%q", spec.Sandbox))
 		} else {
-			args = append(args, "--sandbox", "read-only", "-c", `approval_policy="never"`)
+			args = append(args, "--sandbox", spec.Sandbox)
 		}
+		args = append(args, "-c", `approval_policy="never"`)
 	}
 
 	if cs.model != "" {
@@ -353,7 +358,7 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) []stri
 		}
 		args = append(args, "--json", "--cd", cs.workDir, "-")
 	}
-	return args
+	return args, nil
 }
 
 func codexImageExt(mime string) string {

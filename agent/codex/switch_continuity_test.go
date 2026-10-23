@@ -24,7 +24,10 @@ func TestModeSwitch_ResumeLaunchAppliesSelectedMode(t *testing.T) {
 		t.Fatal("resume identity lost")
 	}
 	s := session.(*codexSession)
-	args := s.buildExecArgs("hello", nil)
+	args, err := s.buildExecArgs("hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	foundID := false
 	for _, arg := range args {
 		if arg == "resume-id" {
