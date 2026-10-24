@@ -75,6 +75,14 @@ type acpSession struct {
 	availableModes []acpModeInfo
 	currentMode    string
 
+	// promptInFlight tracks active session/prompt RPCs. Text chunks that
+	// arrive while no prompt is in flight belong to background work (kimi
+	// acp runs /compact asynchronously and reports "Compaction completed"
+	// long after the /compact prompt's turn has ended) — they get a
+	// synthetic EventResult so the engine's unsolicited reader relays them
+	// to the platform instead of buffering them until the next turn.
+	promptInFlight atomic.Int32
+
 	callbacks sessionCallbacks // may be nil (tests, integration harness)
 
 	// promptImages is set from initialize promptCapabilities.image.
@@ -552,11 +560,23 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	if kind, update, _ := peekSessionUpdate(params); kind == "tool_call_update" {
 		events = s.refineToolUpdateEvents(update, events)
 	}
+	hasVisible := false
 	for _, ev := range events {
 		if ev.Type == core.EventToolResult && toolName != "" {
 			ev.ToolName = toolName
 		}
+		if ev.Type == core.EventText && ev.Content != "" {
+			hasVisible = true
+		}
 		s.emit(ev)
+	}
+	// Out-of-turn text (background work reporting after its turn ended —
+	// e.g. kimi acp's "Compaction completed" chunk) would otherwise sit in
+	// the events buffer until the next foreground turn drains and drops it
+	// as stale. Close it with a synthetic result so the unsolicited reader
+	// relays it immediately.
+	if hasVisible && s.promptInFlight.Load() == 0 {
+		s.emit(core.Event{Type: core.EventResult, SessionID: sid, Done: true})
 	}
 }
 
@@ -868,8 +888,10 @@ func (s *acpSession) dispatchPrompt(sid, prompt string, blocks []any) error {
 	if s.isCompactPrompt(prompt) {
 		s.resetCompaction()
 	}
+	s.promptInFlight.Add(1)
 	res, err := s.tr.call(s.ctx, "session/prompt", params)
 	if err != nil {
+		s.promptInFlight.Add(-1)
 		s.emit(core.Event{Type: core.EventError, Error: err})
 		return fmt.Errorf("acp: session/prompt: %w", err)
 	}
@@ -877,6 +899,9 @@ func (s *acpSession) dispatchPrompt(sid, prompt string, blocks []any) error {
 	inTok, outTok, cacheRead := s.absorbPromptResult(res)
 	s.waitForCompaction(prompt)
 	// Text was streamed via session/update; engine aggregates EventText.
+	// Keep the in-flight mark until after EventResult is queued so a text
+	// chunk racing in from the read loop is not mistaken for out-of-turn
+	// background output.
 	s.emit(core.Event{
 		Type:                 core.EventResult,
 		SessionID:            sid,
@@ -885,6 +910,7 @@ func (s *acpSession) dispatchPrompt(sid, prompt string, blocks []any) error {
 		OutputTokens:         outTok,
 		CacheReadInputTokens: cacheRead,
 	})
+	s.promptInFlight.Add(-1)
 	return nil
 }
 
