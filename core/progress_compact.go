@@ -31,9 +31,12 @@ const (
 	progressDigestInterval   = 30 * time.Second
 	progressDigestFlushRunes = 3000
 	progressMaxRollovers     = 2
+
+	// Coalesce progress during an outage instead of retrying every tool event.
+	compactProgressRetryInterval = time.Second
 )
 
-var progressUpdateFailureBackoffs = []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
+var progressUpdateFailureBackoffs = []time.Duration{compactProgressRetryInterval, 4 * time.Second, 8 * time.Second}
 
 type ProgressCardState string
 
@@ -616,13 +619,14 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 	if w.finalized {
 		return true
 	}
-	w.finalized = true
 	w.cancelTimerLocked()
 	if w.ctx.Err() != nil {
+		w.finalized = true
 		return true
 	}
 	if w.digestMode {
 		w.flushDigestLocked()
+		w.finalized = true
 		return true
 	}
 	if state == "" {
@@ -635,11 +639,13 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 			slog.Warn("progress writer: failed to build final payload", "platform", w.platform.Name())
 			w.enterDigestLocked()
 			w.flushDigestLocked()
+			w.finalized = true
 			return true
 		}
 		w.content = rebuilt
 	}
 	if w.content == "" {
+		w.finalized = true
 		return true
 	}
 	if w.handle == nil {
@@ -648,24 +654,23 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 		if w.digestMode {
 			w.flushDigestLocked()
 		}
+		w.finalized = true
 		return true
 	}
 	if w.content == w.lastSent {
+		w.finalized = true
 		return true
 	}
 	if err := w.updateOnceLocked(); err != nil {
 		if w.ctx.Err() != nil {
+			w.finalized = true
 			return true
 		}
-		slog.Warn("progress writer: Finalize UpdateMessage failed, retrying", "platform", w.platform.Name(), "error", err)
-		if err2 := w.updateOnceLocked(); err2 != nil {
-			if w.ctx.Err() != nil {
-				return true
-			}
-			slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "error", err2)
-			return false
-		}
+		slog.Warn("progress writer: Finalize UpdateMessage failed", "platform", w.platform.Name(), "error", err)
+		// Leave finalized unset so a later Finalize call can retry the same card.
+		return false
 	}
+	w.finalized = true
 	w.lastSent = w.content
 	w.lastUpdateAt = w.now()
 	w.consecutiveFailures = 0
