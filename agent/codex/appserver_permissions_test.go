@@ -52,7 +52,8 @@ func TestAppServerSession_ModeProtocolPayloads(t *testing.T) {
 				if resume {
 					resumeID, method = "parent-thread", "thread/resume"
 					threadParams["threadId"] = resumeID
-					threadParams["persistExtendedHistory"] = true
+					// PersistExtendedHistory stays false so large resumed
+					// threads do not overflow the app-server response.
 				}
 				if err := s.ensureThread(resumeID); err != nil {
 					t.Fatal(err)
