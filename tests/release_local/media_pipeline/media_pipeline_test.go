@@ -214,6 +214,30 @@ func (p *mediaPlatform) waitTextContaining(t *testing.T, substr string) string {
 	return ""
 }
 
+// waitTextCount waits until at least want replies contain substr. Tests with
+// more than one active session need this before t.TempDir cleanup: each turn
+// persists after its reply, so waiting for only one reply can let the other
+// session's save race RemoveAll on Windows.
+func (p *mediaPlatform) waitTextCount(t *testing.T, substr string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		texts, _, _, _, _ := p.snapshot()
+		count := 0
+		for _, text := range texts {
+			if strings.Contains(strings.ToLower(text), strings.ToLower(substr)) {
+				count++
+			}
+		}
+		if count >= want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	texts, _, _, _, _ := p.snapshot()
+	t.Fatalf("timeout waiting for %d texts containing %q, got %#v", want, substr, texts)
+}
+
 func newMediaEngine(t *testing.T) (*core.Engine, *recordingAgent, *mediaPlatform) {
 	t.Helper()
 	agent := newRecordingAgent()
@@ -445,7 +469,7 @@ func TestSendToSessionWithAttachmentsRequiresSessionWhenMultipleSessionsHaveAtta
 	engine.ReceiveMessage(platform, first)
 	engine.ReceiveMessage(platform, second)
 	agent.session.waitRecords(t, 2)
-	platform.waitTextContaining(t, "media ok")
+	platform.waitTextCount(t, "media ok", 2)
 
 	err := engine.SendToSessionWithAttachments(
 		"",

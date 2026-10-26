@@ -108,7 +108,9 @@ func TestResolveClaudeProjectDir_FallsBackToLegacyEncoding(t *testing.T) {
 
 	// Older deployments may have on-disk project keys produced by the old
 	// "replace os.PathSeparator only" encoding; tilde was left intact.
-	workDir := "/Users/x/com~apple~CloudDocs/foo"
+	// FromSlash keeps the legacy key identical on Windows, where the old
+	// encoder replaced backslashes instead of forward slashes.
+	workDir := filepath.FromSlash("/Users/x/com~apple~CloudDocs/foo")
 	legacy := "-Users-x-com~apple~CloudDocs-foo"
 	want := filepath.Join(home, ".claude", "projects", legacy)
 	if err := os.MkdirAll(want, 0o755); err != nil {
