@@ -752,7 +752,10 @@ func exactModelMatch(ref string, catalog []piModel) (piModel, bool) {
 func globModels(pattern string, catalog []piModel) []piModel {
 	re, err := globToRegexp(pattern)
 	if err != nil {
-		slog.Debug("pi: invalid model glob", "pattern", pattern, "error", err)
+		// Do not log the raw pattern: model refs are user-supplied options and
+		// static analysis treats values derived from the agent opts map as
+		// potentially sensitive.
+		slog.Debug("pi: invalid model glob", "pattern_len", len(pattern), "error", err)
 		return nil
 	}
 	var hits []piModel
