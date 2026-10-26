@@ -632,6 +632,9 @@ func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage)
 		return
 	}
 	params := probe["params"]
+	if s.rejectForeignServerRequest(rawID, method, params) {
+		return
+	}
 
 	switch method {
 	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
@@ -650,6 +653,39 @@ func (s *appServerSession) handleServerRequest(probe map[string]json.RawMessage)
 			"error": map[string]any{"code": -32601, "message": "method not found"},
 		})
 	}
+}
+
+// rejectForeignServerRequest answers child-thread requests without forwarding
+// their permissions or questions to the parent conversation.
+func (s *appServerSession) rejectForeignServerRequest(rawID json.RawMessage, method string, paramsRaw json.RawMessage) bool {
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval",
+		"item/permissions/requestApproval", "item/tool/requestUserInput", "item/tool/call":
+	default:
+		return false
+	}
+	var ids struct {
+		ThreadID string `json:"threadId"`
+		TurnID   string `json:"turnId"`
+	}
+	if err := json.Unmarshal(paramsRaw, &ids); err != nil || s.acceptsTurnNotification(method, ids.ThreadID, ids.TurnID) {
+		return false
+	}
+
+	var result any
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		result = map[string]any{"decision": "decline"}
+	case "item/permissions/requestApproval":
+		result = map[string]any{"permissions": map[string]any{}}
+	case "item/tool/requestUserInput":
+		result = appServerRequestUserInputResponse{Answers: map[string]appServerRequestUserInputAnswer{}}
+	case "item/tool/call":
+		s.handleDynamicToolCall(rawID, paramsRaw)
+		return true
+	}
+	_ = s.writeJSON(map[string]any{"jsonrpc": "2.0", "id": rawID, "result": result})
+	return true
 }
 
 func (s *appServerSession) handleApprovalRequest(rawID json.RawMessage, method string, paramsRaw json.RawMessage) {
@@ -1218,7 +1254,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 
 	case "turn/started":
 		var notif turnNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsThreadNotification(method, notif.ThreadID) {
 			s.beginTurn(notif.Turn.ID)
 		}
 
@@ -1250,7 +1286,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 
 	case "turn/completed":
 		var notif turnNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsTurnNotification(method, notif.ThreadID, notif.Turn.ID) {
 			if strings.EqualFold(strings.TrimSpace(notif.Turn.Status), "failed") || notif.Turn.Error != nil {
 				errMsg := ""
 				if notif.Turn.Error != nil {
@@ -1273,7 +1309,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 
 	case "thread/tokenUsage/updated":
 		var notif appServerThreadTokenUsageNotification
-		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil && s.acceptsTurnNotification(method, notif.ThreadID, notif.TurnID) {
 			s.storeContextUsage(mapAppServerTokenUsage(notif))
 		}
 
@@ -1283,6 +1319,35 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 			s.emitError(fmt.Errorf("%s", notif.Message))
 		}
 	}
+}
+
+func (s *appServerSession) acceptsThreadNotification(method, threadID string) bool {
+	currentThreadID := s.CurrentSessionID()
+	if threadID == "" || currentThreadID == "" || threadID == currentThreadID {
+		return true
+	}
+	slog.Debug("codex app-server: ignoring notification for another thread",
+		"method", method, "thread_id", threadID, "current_thread_id", currentThreadID)
+	return false
+}
+
+func (s *appServerSession) acceptsTurnNotification(method, threadID, turnID string) bool {
+	if !s.acceptsThreadNotification(method, threadID) {
+		return false
+	}
+	if turnID == "" {
+		return true
+	}
+
+	s.stateMu.Lock()
+	currentTurn := s.currentTurn
+	s.stateMu.Unlock()
+	if currentTurn == "" || turnID == currentTurn {
+		return true
+	}
+	slog.Debug("codex app-server: ignoring notification for another turn",
+		"method", method, "turn_id", turnID, "current_turn_id", currentTurn)
+	return false
 }
 
 func (s *appServerSession) handleItemStarted(item map[string]any) {
