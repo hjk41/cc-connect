@@ -11979,15 +11979,15 @@ func TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			if !strings.Contains(sent[0], normalizedWsDir) {
-				t.Fatalf("expected shell output to contain shared workspace %q, got %q", normalizedWsDir, sent[0])
+		// Streaming progress (e.g. "⏳ pwd") is sent before the result, so
+		// scan for a path-bearing message rather than assuming sent[0] is it.
+		for _, output := range p.getSent() {
+			if strings.Contains(output, normalizedWsDir) {
+				return
 			}
-			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output containing shared workspace %q, sent=%#v", normalizedWsDir, p.getSent())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -12020,20 +12020,19 @@ func TestCmdShell_MultiWorkspaceIgnoresMissingSharedBinding(t *testing.T) {
 	expectedResolved := normalizeWorkspacePath(agent.workDir)
 	missingResolved := normalizeWorkspacePath(missingDir)
 	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			// With streaming progress, the final result is the last sent message
-			output := sent[len(sent)-1]
-			if !strings.Contains(output, agent.workDir) && !strings.Contains(output, expectedResolved) {
-				t.Fatalf("expected shell output to fall back to agent work dir %q (resolved %q), got %q", agent.workDir, expectedResolved, output)
-			}
+		// Streaming progress (e.g. "⏳ pwd") arrives before the result, so
+		// wait for a path-bearing message instead of inspecting the last one
+		// immediately.
+		for _, output := range p.getSent() {
 			if strings.Contains(output, missingDir) || strings.Contains(output, missingResolved) {
 				t.Fatalf("expected shell output to ignore missing shared workspace %q, got %q", missingDir, output)
 			}
-			return
+			if strings.Contains(output, agent.workDir) || strings.Contains(output, expectedResolved) {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output to fall back to agent work dir %q (resolved %q), sent=%#v", agent.workDir, expectedResolved, p.getSent())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
