@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/kimi"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -53,13 +54,25 @@ func (h *historyCollector) entries() []core.HistoryEntry {
 	return mergeHistoryChunks(h.chunks)
 }
 
-// GetSessionHistory loads one session in a short-lived probe and returns
-// user/assistant text. Thoughts and tool calls are ignored. limit <= 0
-// returns the full merged transcript; otherwise the last limit entries.
+// GetSessionHistory loads one session and returns user/assistant text.
+// Thoughts and tool calls are ignored. limit <= 0 returns the full merged
+// transcript; otherwise the last limit entries.
+//
+// Kimi Code CLI persists transcripts locally, so read those first when they
+// exist: it avoids spawning the agent and works even for backends that do not
+// implement session/load. Other ACP backends (e.g. Devin) are served by a
+// short-lived session/load probe that collects the replayed history chunks.
 func (a *Agent) GetSessionHistory(ctx context.Context, sessionID string, limit int) ([]core.HistoryEntry, error) {
 	sessionID = strings.TrimSpace(sessionID)
 	if sessionID == "" {
 		return nil, fmt.Errorf("acp: session id is required")
+	}
+	a.mu.RLock()
+	extra := append([]string(nil), a.extraEnv...)
+	extra = append(extra, a.sessionEnv...)
+	a.mu.RUnlock()
+	if entries, err := kimi.ReadSessionHistory(sessionID, limit, extra...); err == nil {
+		return entries, nil
 	}
 	cwd := a.canonicalWorkDir()
 	probeCtx, cancel := context.WithTimeout(ctx, historyProbeTimeout)

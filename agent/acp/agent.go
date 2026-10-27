@@ -446,6 +446,8 @@ func (a *Agent) SetPromptPrefix(prefix string) {
 
 func (a *Agent) Stop() error { return nil }
 
+var _ core.HistoryProvider = (*Agent)(nil)
+
 // -- AgentDoctorInfo --
 
 func (a *Agent) CLIBinaryName() string {
