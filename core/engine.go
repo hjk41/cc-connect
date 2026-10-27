@@ -604,7 +604,7 @@ type interactiveState struct {
 
 	// eventsNeedResync is true when buffered events should be drained before
 	// the next turn (e.g. after an abnormal exit). Defaults to true (safe);
-	// cleared to false only after a clean EventResult.
+	// cleared after EventResult or a turn error on a still-live session.
 	eventsNeedResync bool
 
 	// lastCompletedUserMessageTimeMs is the max platform user-message create time
@@ -5357,14 +5357,36 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				}
 
 			case EventError:
+				// A turn can fail while the persistent session and its background
+				// tasks keep running. Deliver buffered text before the error and
+				// keep consuming the live stream instead of abandoning its events.
+				if partial := strings.Join(textParts, ""); strings.TrimSpace(partial) != "" {
+					for _, chunk := range SplitMessageCodeFenceAware(partial, maxPlatformMessageLen) {
+						e.send(p, replyCtx, chunk)
+					}
+					session.AddHistory("assistant", partial)
+					sessions.Save()
+				}
+				textParts = nil
+				toolsUsed = nil
+				turnActive = false
+				if workspaceDir != "" && e.workspacePool != nil {
+					if ws := e.workspacePool.Get(workspaceDir); ws != nil {
+						ws.EndTurn()
+					}
+				}
 				if event.Error != nil {
 					slog.Error("unsolicited agent error", "error", event.Error, "session", sessionKey)
 					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), event.Error))
 				}
 				state.mu.Lock()
-				state.eventsNeedResync = true
+				alive := agentSession.Alive() && !state.stopped
+				state.eventsNeedResync = !alive
 				state.mu.Unlock()
-				return
+				if !alive {
+					return
+				}
+				e.scheduleAgentSessionIdleClose(sessionKey, state)
 			}
 		}
 	}
@@ -6237,19 +6259,24 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// Use state.agentSession.CurrentSessionID() instead of event.SessionID.
 			// event.SessionID may be empty in some cases, causing the agent_session_id
 			// to not be persisted to disk, breaking session resume on next startup.
-			if state != nil && state.agentSession != nil {
-				if currentID := state.agentSession.CurrentSessionID(); currentID != "" {
-					wasEmpty := session.GetAgentSessionID() == ""
-					if session.GetAgentSessionID() != currentID {
-						session.SetAgentSessionID(currentID, e.agent.Name())
-						if wasEmpty {
-							pendingName := session.GetName()
-							if pendingName != "" && pendingName != "session" && pendingName != "default" {
-								sessions.SetSessionName(currentID, pendingName)
+			if state != nil {
+				state.mu.Lock()
+				agentSession := state.agentSession
+				state.mu.Unlock()
+				if agentSession != nil {
+					if currentID := agentSession.CurrentSessionID(); currentID != "" {
+						wasEmpty := session.GetAgentSessionID() == ""
+						if session.GetAgentSessionID() != currentID {
+							session.SetAgentSessionID(currentID, e.agent.Name())
+							if wasEmpty {
+								pendingName := session.GetName()
+								if pendingName != "" && pendingName != "session" && pendingName != "default" {
+									sessions.SetSessionName(currentID, pendingName)
+								}
 							}
 						}
+						sessions.Save()
 					}
-					sessions.Save()
 				}
 			}
 
@@ -6840,7 +6867,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 			state.mu.Lock()
-			state.eventsNeedResync = true
+			// A per-turn error does not invalidate a live session's event
+			// stream. Hand it to the unsolicited reader so background output
+			// is delivered rather than drained on the next user message.
+			state.eventsNeedResync = state.agentSession == nil || !state.agentSession.Alive() || state.stopped
 			state.mu.Unlock()
 			if hasRichCard && cardMessageID != nil {
 				errCard := buildResolvedRichCard(CardStatusError, "", toolSteps, partialText, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))

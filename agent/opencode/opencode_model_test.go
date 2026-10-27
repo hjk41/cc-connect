@@ -191,6 +191,31 @@ func waitForModelsInPersistentCache(t *testing.T, cachePath string, want []strin
 	t.Fatalf("persistent cache models = %v, want %v", cache, want)
 }
 
+// waitForModelsInMemory waits for the refreshed cache to be installed in the
+// agent. The refresh writes the disk cache before swapping the in-memory copy,
+// so waiting for the disk file alone can still observe the old models.
+func waitForModelsInMemory(t *testing.T, a *Agent, want []string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		models := a.persistentModels()
+		if len(models) == len(want) {
+			match := true
+			for i, model := range models {
+				if model.Name != want[i] {
+					match = false
+					break
+				}
+			}
+			if match {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("in-memory persistent models = %v, want %v", a.persistentModels(), want)
+}
+
 func waitForFileContent(t *testing.T, path, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -766,6 +791,7 @@ func TestAvailableModels_BackgroundRefreshUpdatesDiskCache(t *testing.T) {
 	}
 
 	waitForModelsInPersistentCache(t, cachePath, []string{"fresh/model", "second/model"})
+	waitForModelsInMemory(t, agent.(*Agent), []string{"fresh/model", "second/model"})
 
 	got = switcher.AvailableModels(context.Background())
 	if len(got) != 2 || got[0].Name != "fresh/model" || got[1].Name != "second/model" {

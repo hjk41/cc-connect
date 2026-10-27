@@ -11979,15 +11979,15 @@ func TestCmdShell_MultiWorkspaceUsesSharedBindingWorkDir(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			if !strings.Contains(sent[0], normalizedWsDir) {
-				t.Fatalf("expected shell output to contain shared workspace %q, got %q", normalizedWsDir, sent[0])
+		// Streaming progress (e.g. "⏳ pwd") is sent before the result, so
+		// scan for a path-bearing message rather than assuming sent[0] is it.
+		for _, output := range p.getSent() {
+			if strings.Contains(output, normalizedWsDir) {
+				return
 			}
-			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output containing shared workspace %q, sent=%#v", normalizedWsDir, p.getSent())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -12020,20 +12020,19 @@ func TestCmdShell_MultiWorkspaceIgnoresMissingSharedBinding(t *testing.T) {
 	expectedResolved := normalizeWorkspacePath(agent.workDir)
 	missingResolved := normalizeWorkspacePath(missingDir)
 	for {
-		sent := p.getSent()
-		if len(sent) > 0 {
-			// With streaming progress, the final result is the last sent message
-			output := sent[len(sent)-1]
-			if !strings.Contains(output, agent.workDir) && !strings.Contains(output, expectedResolved) {
-				t.Fatalf("expected shell output to fall back to agent work dir %q (resolved %q), got %q", agent.workDir, expectedResolved, output)
-			}
+		// Streaming progress (e.g. "⏳ pwd") arrives before the result, so
+		// wait for a path-bearing message instead of inspecting the last one
+		// immediately.
+		for _, output := range p.getSent() {
 			if strings.Contains(output, missingDir) || strings.Contains(output, missingResolved) {
 				t.Fatalf("expected shell output to ignore missing shared workspace %q, got %q", missingDir, output)
 			}
-			return
+			if strings.Contains(output, agent.workDir) || strings.Contains(output, expectedResolved) {
+				return
+			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for shell response")
+			t.Fatalf("timed out waiting for shell output to fall back to agent work dir %q (resolved %q), sent=%#v", agent.workDir, expectedResolved, p.getSent())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -15098,11 +15097,11 @@ func TestUnsolicitedReader_SetsResyncOnChannelClose(t *testing.T) {
 	}
 }
 
-// TestUnsolicitedReader_SetsResyncOnEventError verifies that EventError
-// sets eventsNeedResync to true and relays the error.
-func TestUnsolicitedReader_SetsResyncOnEventError(t *testing.T) {
+// A dead session cannot produce further background work after an error.
+func TestUnsolicitedReader_SetsResyncOnDeadSessionError(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	sess := newControllableSession("unsol-error")
+	sess.alive = false
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	defer e.Stop()
 
@@ -15149,6 +15148,52 @@ func TestUnsolicitedReader_SetsResyncOnEventError(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected error to be relayed to platform, got %v", sent)
+	}
+}
+
+func TestUnsolicitedReader_KeepsLiveSessionAfterTurnError(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newControllableSession("unsol-live-error")
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	const key = "test:live-error:u1"
+	session := e.sessions.GetOrCreateActive(key)
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx"}
+	e.startUnsolicitedReader(state, session, e.sessions, key, "")
+	defer e.stopUnsolicitedReader(state)
+
+	// Preserve text from each failed background turn and keep accepting
+	// subsequent results; neither error is a process-exit notification.
+	for _, text := range []string{"first partial answer", "second partial answer"} {
+		sess.events <- Event{Type: EventText, Content: text}
+		sess.events <- Event{Type: EventError, Error: errors.New("turn was refused")}
+	}
+	sess.events <- Event{Type: EventText, Content: "later background answer"}
+	sess.events <- Event{Type: EventResult, Done: true}
+
+	sent := waitForPlatformSend(p, 5, 2*time.Second)
+	if len(sent) != 5 {
+		t.Fatalf("expected two partial answers, two errors and a later answer; got %v", sent)
+	}
+	e.stopUnsolicitedReader(state)
+	for i, want := range []string{"first partial answer", "turn was refused", "second partial answer", "turn was refused", "later background answer"} {
+		if !strings.Contains(sent[i], want) {
+			t.Errorf("reply %d = %q, want %q", i, sent[i], want)
+		}
+	}
+	history := session.GetHistory(0)
+	if len(history) != 3 {
+		t.Fatalf("history lost background answers: %+v", history)
+	}
+	state.mu.Lock()
+	resync := state.eventsNeedResync
+	state.mu.Unlock()
+	if resync {
+		t.Error("live session should preserve its event stream after a turn error")
 	}
 }
 
