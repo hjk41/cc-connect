@@ -6259,19 +6259,24 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// Use state.agentSession.CurrentSessionID() instead of event.SessionID.
 			// event.SessionID may be empty in some cases, causing the agent_session_id
 			// to not be persisted to disk, breaking session resume on next startup.
-			if state != nil && state.agentSession != nil {
-				if currentID := state.agentSession.CurrentSessionID(); currentID != "" {
-					wasEmpty := session.GetAgentSessionID() == ""
-					if session.GetAgentSessionID() != currentID {
-						session.SetAgentSessionID(currentID, e.agent.Name())
-						if wasEmpty {
-							pendingName := session.GetName()
-							if pendingName != "" && pendingName != "session" && pendingName != "default" {
-								sessions.SetSessionName(currentID, pendingName)
+			if state != nil {
+				state.mu.Lock()
+				agentSession := state.agentSession
+				state.mu.Unlock()
+				if agentSession != nil {
+					if currentID := agentSession.CurrentSessionID(); currentID != "" {
+						wasEmpty := session.GetAgentSessionID() == ""
+						if session.GetAgentSessionID() != currentID {
+							session.SetAgentSessionID(currentID, e.agent.Name())
+							if wasEmpty {
+								pendingName := session.GetName()
+								if pendingName != "" && pendingName != "session" && pendingName != "default" {
+									sessions.SetSessionName(currentID, pendingName)
+								}
 							}
 						}
+						sessions.Save()
 					}
-					sessions.Save()
 				}
 			}
 

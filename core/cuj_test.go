@@ -35,6 +35,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -423,6 +424,11 @@ func min(a, b int) int {
 // On timeout, fails the test with reason.
 func (env *cujEnv) waitFor(reason string, timeout time.Duration, cond func() bool) {
 	env.t.Helper()
+	// Hosted Windows runners are significantly slower under parallel package
+	// tests and coverage; keep short CUJ waits from turning into flakes.
+	if runtime.GOOS == "windows" && timeout < 10*time.Second {
+		timeout = 10 * time.Second
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if cond() {

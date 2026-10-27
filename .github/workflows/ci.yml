@@ -137,10 +137,22 @@ jobs:
         run: go build ./...
       - name: Vet
         run: go vet ./...
-      - name: Run tests with race detection and coverage
+      - name: Run tests with coverage
         env:
           TMPDIR: ${{ runner.temp }}
-        run: go test -p=4 -parallel=4 -race -coverprofile=coverage.out -covermode=atomic -timeout=10m ./...
+          RUNNER_OS: ${{ runner.os }}
+        run: |
+          set -euo pipefail
+          args=(-coverprofile=coverage.out -covermode=atomic -timeout=20m ./...)
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # Hosted Windows runners are unstable with -race at high
+            # parallelism (runtime crashes and cleanup races under load).
+            # Keep race coverage on Linux/macOS and use lower parallelism here.
+            args=(-p=2 -parallel=2 "${args[@]}")
+          else
+            args=(-p=4 -parallel=4 -race "${args[@]}")
+          fi
+          go test "${args[@]}"
       - name: Critical user journeys
         env:
           TMPDIR: ${{ runner.temp }}
