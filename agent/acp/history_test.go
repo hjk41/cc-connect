@@ -17,6 +17,7 @@ func TestAgent_HistoryProviderContracts(t *testing.T) {
 func TestAgent_GetSessionHistory_ReadsKimiTranscript(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", "")
 	t.Setenv("KIMI_SHARE_DIR", "")
 
@@ -63,6 +64,7 @@ func TestAgent_GetSessionHistory_ReadsKimiTranscript(t *testing.T) {
 func TestAgent_GetSessionHistory_MissingSessionReturnsError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", "")
 	t.Setenv("KIMI_SHARE_DIR", "")
 
@@ -76,6 +78,7 @@ func TestAgent_GetSessionHistory_ForwardsAgentStorageEnv(t *testing.T) {
 	home := t.TempDir()
 	customHome := filepath.Join(home, "custom-kimi-home")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("KIMI_CODE_HOME", "")
 	t.Setenv("KIMI_SHARE_DIR", "")
 
@@ -99,4 +102,3 @@ func TestAgent_GetSessionHistory_ForwardsAgentStorageEnv(t *testing.T) {
 		t.Fatalf("entries = %+v, want [from custom env]", entries)
 	}
 }
-
