@@ -35,7 +35,9 @@ func TestMsgReasoningDefaultAgentAgnostic(t *testing.T) {
 			t.Fatalf("%s is empty", lang)
 		}
 	}
-	if !strings.Contains(messages[MsgReasoningDefault][LangEnglish], "agent default") {
+	// Upstream made this hint agent-agnostic ("using default"); the guard
+	// still ensures no concrete agent name (e.g. Codex) leaks into it.
+	if !strings.Contains(messages[MsgReasoningDefault][LangEnglish], "using default") {
 		t.Fatal(messages[MsgReasoningDefault][LangEnglish])
 	}
 }

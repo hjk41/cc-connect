@@ -895,7 +895,7 @@ func (s *acpSession) dispatchPrompt(sid, prompt string, blocks []any) error {
 		s.emit(core.Event{Type: core.EventError, Error: err})
 		return fmt.Errorf("acp: session/prompt: %w", err)
 	}
-	slog.Debug("acp: session/prompt response", "session_id", sid, "response_len", len(res))
+	slog.Debug("acp: session/prompt response", "session_id", sid, "response_len", len(res), "response", string(res))
 	inTok, outTok, cacheRead := s.absorbPromptResult(res)
 	s.waitForCompaction(prompt)
 	// Text was streamed via session/update; engine aggregates EventText.

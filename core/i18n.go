@@ -2627,11 +2627,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Uso: `/model switch <número>` o `/model switch <nombre_modelo>`",
 	},
 	MsgReasoningDefault: {
-		LangEnglish:            "Current reasoning effort: (not set, using agent default)\n",
-		LangChinese:            "当前推理强度: (未设置，使用智能体默认值)\n",
-		LangTraditionalChinese: "當前推理強度: (未設置，使用智慧體預設值)\n",
-		LangJapanese:           "現在の推論強度: (未設定、エージェントのデフォルトを使用)\n",
-		LangSpanish:            "Esfuerzo de razonamiento actual: (no configurado, usando el valor predeterminado del agente)\n",
+		LangEnglish:            "Current reasoning effort: (not set, using default)\n",
+		LangChinese:            "当前推理强度: (未设置，使用默认值)\n",
+		LangTraditionalChinese: "當前推理強度: (未設定，使用預設值)\n",
+		LangJapanese:           "現在の推論強度: (未設定、デフォルトを使用)\n",
+		LangSpanish:            "Esfuerzo de razonamiento actual: (no configurado, usando el valor predeterminado)\n",
 	},
 	MsgReasoningListTitle: {
 		LangEnglish:            "Available reasoning levels:\n",

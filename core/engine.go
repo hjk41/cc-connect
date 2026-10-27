@@ -10781,10 +10781,13 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
+	efforts := switcher.AvailableReasoningEfforts()
+	if len(efforts) == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgReasoningNotSupported))
+		return
+	}
 	if len(args) == 0 {
 		if !supportsCards(p) {
-			efforts := switcher.AvailableReasoningEfforts()
-
 			var sb strings.Builder
 			current := switcher.GetReasoningEffort()
 			if current == "" {
@@ -10826,7 +10829,6 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	efforts := switcher.AvailableReasoningEfforts()
 	target := strings.ToLower(strings.TrimSpace(args[0]))
 	if idx, err := strconv.Atoi(target); err == nil && idx >= 1 && idx <= len(efforts) {
 		target = efforts[idx-1]
@@ -10854,6 +10856,9 @@ func (e *Engine) cmdReasoning(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) reasoningUsage(efforts []string) string {
+	if len(efforts) == 0 {
+		return e.i18n.T(MsgReasoningNotSupported)
+	}
 	return e.i18n.Tf(MsgReasoningUsage, strings.Join(efforts, "|"))
 }
 
@@ -14129,6 +14134,9 @@ func (e *Engine) renderReasoningCard(sessionKey string) *Card {
 	}
 
 	efforts := switcher.AvailableReasoningEfforts()
+	if len(efforts) == 0 {
+		return e.simpleCard(e.i18n.T(MsgCardTitleReasoning), "orange", e.i18n.T(MsgReasoningNotSupported))
+	}
 	current := switcher.GetReasoningEffort()
 
 	var sb strings.Builder
