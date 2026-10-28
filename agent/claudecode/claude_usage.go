@@ -46,9 +46,9 @@ type claudeUsageProbeState struct {
 	usageSentAt     time.Time
 }
 
-// lockedBuffer serializes stderr writes from os/exec's pump with reads from
-// the probe loop. bytes.Buffer is not safe for concurrent use, and the probe
-// inspects stderr while the child process may still be writing to it.
+// lockedBuffer is a bytes.Buffer that can be written by os/exec's stderr copier goroutine
+// while the probe loop reads it. A plain bytes.Buffer is a data race there, and -race
+// reports it in TestRunClaudeUsageProbe_ReturnsWhenReaderFinishesFirst.
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
