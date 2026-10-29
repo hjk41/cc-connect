@@ -7818,7 +7818,10 @@ func (s *controllableAgentSession) Close() error {
 
 func waitForInteractiveStateRemoved(t *testing.T, e *Engine, key string) {
 	t.Helper()
-	deadline := time.After(500 * time.Millisecond)
+	// Idle close is driven by a 20ms timer in these tests, but the timer
+	// goroutine can be scheduled late on a loaded CI runner under -race.
+	// Allow generous headroom while still failing if cleanup never happens.
+	deadline := time.After(5 * time.Second)
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 	for {
