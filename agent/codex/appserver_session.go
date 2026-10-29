@@ -1336,6 +1336,13 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 			}
 		}
 
+	case "thread/status/changed":
+		// Thread status has neither a turn ID nor a terminal outcome. An idle
+		// notification may precede the final items or a failed turn/completed,
+		// and a delayed idle may belong to the previous turn. Only the matching
+		// turn/completed notification can finish the active turn.
+		return
+
 	case "account/rateLimits/updated":
 		var notif appServerRateLimitsResponse
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
