@@ -8794,6 +8794,19 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 			for time.Now().Before(deadline) {
 				sent := platform.getSent()
 				if sentContains(sent, "triggered") && sentContains(sent, "manual run complete") {
+					// The trigger runs on a background goroutine that persists the
+					// run via store.MarkRun after delivering the job's output.
+					// Wait for that write to finish; otherwise t.TempDir()'s
+					// RemoveAll cleanup can race the crons/jobs.json write and
+					// fail with "directory not empty" on Windows.
+					found, lastRunSet, _ := cronJobRunStatus(store, job.ID)
+					if !found {
+						t.Fatal("expected stored job")
+					}
+					if !lastRunSet {
+						time.Sleep(10 * time.Millisecond)
+						continue
+					}
 					return
 				}
 				time.Sleep(10 * time.Millisecond)
