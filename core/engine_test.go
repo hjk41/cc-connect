@@ -798,6 +798,141 @@ func TestEngineSendToSessionWithAttachments_UnsupportedPlatform(t *testing.T) {
 	}
 }
 
+type attachmentEmitSession struct {
+	events chan Event
+	result Event
+	once   sync.Once
+}
+
+func (s *attachmentEmitSession) Send(_ string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.once.Do(func() { s.events <- s.result })
+	return nil
+}
+func (s *attachmentEmitSession) Events() <-chan Event                                 { return s.events }
+func (s *attachmentEmitSession) CurrentSessionID() string                             { return "attachment-session" }
+func (s *attachmentEmitSession) Alive() bool                                          { return true }
+func (s *attachmentEmitSession) Close() error                                         { return nil }
+func (s *attachmentEmitSession) RespondPermission(_ string, _ PermissionResult) error { return nil }
+
+type attachmentCapturePlatform struct {
+	stubMediaPlatform
+	fileCh chan FileAttachment
+}
+
+func (p *attachmentCapturePlatform) SendFile(_ context.Context, _ any, file FileAttachment) error {
+	p.files = append(p.files, file)
+	select {
+	case p.fileCh <- file:
+	default:
+	}
+	return nil
+}
+
+// TestEventResultAttachmentPaths_AreDelivered is the end-to-end wiring test:
+// an agent EventResult carrying AttachmentPaths must make the engine call the
+// platform FileSender, not just the text reply.
+func TestEventResultAttachmentPaths_AreDelivered(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(path, []byte("pptx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &attachmentCapturePlatform{
+		stubMediaPlatform: stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}},
+		fileCh:            make(chan FileAttachment, 1),
+	}
+	session := &attachmentEmitSession{
+		events: make(chan Event, 1),
+		result: Event{Type: EventResult, Content: "done", Done: true, AttachmentPaths: []string{path}},
+	}
+	e := NewEngine("test", &resultAgent{session: session}, []Platform{p}, "", LangEnglish)
+
+	e.handleMessage(p, &Message{
+		SessionKey: "test:user",
+		Platform:   "test",
+		UserID:     "user",
+		Content:    "hi",
+		ReplyCtx:   "ctx",
+	})
+
+	select {
+	case got := <-p.fileCh:
+		if got.FileName != "deck.pptx" || string(got.Data) != "pptx" {
+			t.Fatalf("file = %#v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for result attachment delivery")
+	}
+	if sent := p.getSent(); len(sent) != 1 || sent[0] != "done" {
+		t.Fatalf("sent text = %#v", sent)
+	}
+}
+
+func TestSendResultAttachments_DeliversFiles(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(path, []byte("pptx-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	e.sendResultAttachments(p, "ctx", []string{path, path})
+
+	if len(p.files) != 1 {
+		t.Fatalf("files = %#v, want one (deduped)", p.files)
+	}
+	if p.files[0].FileName != "deck.pptx" || string(p.files[0].Data) != "pptx-bytes" {
+		t.Fatalf("file = %#v", p.files[0])
+	}
+	if p.files[0].MimeType == "" {
+		t.Fatal("mime type is empty")
+	}
+}
+
+func TestSendResultAttachments_SkipsMissingAndNonRegular(t *testing.T) {
+	dir := t.TempDir()
+	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	e.sendResultAttachments(p, "ctx", []string{
+		filepath.Join(dir, "missing.pptx"),
+		dir,
+	})
+	if len(p.files) != 0 {
+		t.Fatalf("files = %#v, want none", p.files)
+	}
+}
+
+func TestSendResultAttachments_DisabledByConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(path, []byte("pptx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetAttachmentSendEnabled(false)
+
+	e.sendResultAttachments(p, "ctx", []string{path})
+	if len(p.files) != 0 {
+		t.Fatalf("files = %#v, want none when disabled", p.files)
+	}
+}
+
+func TestSendResultAttachments_UnsupportedPlatform(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "deck.pptx")
+	if err := os.WriteFile(path, []byte("pptx"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+
+	// Must not panic or send text when the platform lacks FileSender.
+	e.sendResultAttachments(p, "ctx", []string{path})
+}
+
 func TestEngineSendToSessionWithAttachments_DisabledByConfig(t *testing.T) {
 	p := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -3541,6 +3676,11 @@ func TestHandleMessage_MultiWorkspacePreservesCCSessionKey(t *testing.T) {
 			}
 			if strings.Contains(got, normalizedWsDir) {
 				t.Fatalf("CC_SESSION_KEY leaked workspace path: %q", got)
+			}
+			// Codex filters *KEY* from the shell environment; the unfiltered
+			// alias must carry the same session key.
+			if alias := wsAgent.EnvValue("CC_SESSION"); alias != got {
+				t.Fatalf("CC_SESSION = %q, want %q", alias, got)
 			}
 			return
 		}

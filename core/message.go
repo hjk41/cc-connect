@@ -527,6 +527,13 @@ type Event struct {
 	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
 	ModelSwitch              *ModelSwitch   // populated for EventModelSwitch
+	// AttachmentPaths, for EventResult, lists local files the agent produced
+	// and wants delivered as attachments alongside the final reply. The engine
+	// reads and sends them through the platform's FileSender after the text
+	// reply. Paths are filtered by the agent adapter (only files inside the
+	// agent's work dir are allowed) so a model-authored citation cannot
+	// exfiltrate arbitrary files.
+	AttachmentPaths []string
 }
 
 // HistoryEntry is one turn in a conversation.

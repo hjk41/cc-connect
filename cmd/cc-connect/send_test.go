@@ -58,6 +58,7 @@ func TestParseSendArgs_RequiresMessageOrAttachment(t *testing.T) {
 func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	t.Setenv("CC_PROJECT", "demo")
 	t.Setenv("CC_SESSION_KEY", "telegram:123:456")
+	t.Setenv("CC_SESSION", "")
 
 	dir := t.TempDir()
 	imgPath := filepath.Join(dir, "chart.png")
@@ -71,6 +72,23 @@ func TestParseSendArgs_UsesSessionEnvFallback(t *testing.T) {
 	}
 	if req.Project != "demo" {
 		t.Fatalf("project = %q, want demo", req.Project)
+	}
+	if req.SessionKey != "telegram:123:456" {
+		t.Fatalf("session = %q, want telegram:123:456", req.SessionKey)
+	}
+}
+
+// TestParseSendArgs_UsesUnfilteredSessionAlias covers Codex's default shell
+// environment policy, which removes *KEY* variables: only CC_SESSION reaches
+// the agent shell, so the CLI must fall back to it.
+func TestParseSendArgs_UsesUnfilteredSessionAlias(t *testing.T) {
+	t.Setenv("CC_PROJECT", "demo")
+	t.Setenv("CC_SESSION_KEY", "")
+	t.Setenv("CC_SESSION", "telegram:123:456")
+
+	req, _, err := parseSendArgs([]string{"--message", "hello"})
+	if err != nil {
+		t.Fatalf("parseSendArgs returned error: %v", err)
 	}
 	if req.SessionKey != "telegram:123:456" {
 		t.Fatalf("session = %q, want telegram:123:456", req.SessionKey)

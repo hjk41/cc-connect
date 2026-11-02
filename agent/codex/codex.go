@@ -45,6 +45,8 @@ type Agent struct {
 	codexHome       string
 	systemPrompt    string
 	appendPrompt    string
+	language        string
+	developerPrompt string
 	cmd             string   // explicit CLI command; empty enables discovery
 	cliExtraArgs    []string // extra args parsed from cmd after the binary
 	providers       []core.ProviderConfig
@@ -67,6 +69,9 @@ func New(opts map[string]any) (core.Agent, error) {
 	codexHome, _ := opts["codex_home"].(string)
 	systemPrompt, _ := opts["system_prompt"].(string)
 	appendPrompt, _ := opts["append_system_prompt"].(string)
+	language, _ := opts["language"].(string)
+	language = strings.TrimSpace(language)
+	lang := core.NormalizeLanguageString(language)
 	backend = normalizeBackend(backend)
 	spec, err := resolveCodexBackendMode(mode, backend)
 	if err != nil {
@@ -101,6 +106,20 @@ func New(opts map[string]any) (core.Agent, error) {
 		}
 	}
 
+	// Codex has no --append-system-prompt flag, but -c developer_instructions
+	// is injected as a developer message before skills/AGENTS.md. Inject the
+	// cc-connect tool prompt natively so every session (including workspaces
+	// created in multi-workspace mode) knows about cc-connect send and the
+	// automatic output-citation delivery.
+	instructionsHome := strings.TrimSpace(codexHome)
+	if instructionsHome == "" {
+		if resolved, err := resolveCodexHome(configEnv); err == nil {
+			instructionsHome = resolved
+		}
+	}
+	existingInstructions := readConfiguredDeveloperInstructions(instructionsHome)
+	developerPrompt := buildCodexDeveloperPrompt(lang, existingInstructions)
+
 	return &Agent{
 		allowedTools:    toolallowlist.Parse(opts["allowed_tools"]),
 		workDir:         workDir,
@@ -112,6 +131,8 @@ func New(opts map[string]any) (core.Agent, error) {
 		codexHome:       strings.TrimSpace(codexHome),
 		systemPrompt:    strings.TrimSpace(systemPrompt),
 		appendPrompt:    strings.TrimSpace(appendPrompt),
+		language:        language,
+		developerPrompt: developerPrompt,
 		cmd:             cmd,
 		cliExtraArgs:    cliExtraArgs,
 		configEnv:       configEnv,
@@ -169,6 +190,11 @@ func normalizeReasoningEffort(raw string) string {
 }
 
 func (a *Agent) Name() string { return "codex" }
+
+// HasSystemPromptSupport reports that the cc-connect tool prompt is injected
+// through Codex's -c developer_instructions channel. The engine therefore
+// skips the project-memory-file setup path for Codex.
+func (a *Agent) HasSystemPromptSupport() bool { return true }
 
 func (a *Agent) SetWorkDir(dir string) {
 	a.mu.Lock()
@@ -521,6 +547,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	codexHome := a.codexHome
 	systemPrompt := a.systemPrompt
 	appendPrompt := a.appendPrompt
+	developerPrompt := a.developerPrompt
 	cliBin := a.cmd
 	cliExtraArgs := a.cliExtraArgs
 	workDir := a.workDir
@@ -555,13 +582,13 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	}
 
 	if backend == "app_server" {
-		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, allowedTools)
+		return newAppServerSession(ctx, cliBin, cliExtraArgs, appServerURL, workDir, model, reasoningEffort, mode, sessionID, baseURL, provName, extraEnv, codexHome, systemPrompt, appendPrompt, developerPrompt, allowedTools)
 	}
 	if codexHome != "" {
 		extraEnv = append(extraEnv, "CODEX_HOME="+codexHome)
 	}
 
-	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt)
+	return newCodexSession(ctx, cliBin, cliExtraArgs, workDir, model, reasoningEffort, mode, sessionID, baseURL, extraEnv, provName, systemPrompt, appendPrompt, developerPrompt)
 }
 
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
@@ -644,6 +671,7 @@ func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	if a.appendPrompt != "" {
 		opts["append_system_prompt"] = a.appendPrompt
 	}
+	opts["language"] = a.language
 	if len(a.configEnv) > 0 {
 		env := make(map[string]string, len(a.configEnv))
 		for _, kv := range a.configEnv {

@@ -790,6 +790,8 @@ These two commands write the same cc-connect instructions. Either one is enough.
 
 If you have run setup before, run it again after upgrading so the instructions are refreshed to the latest version.
 
+Codex (0.166+) now injects these instructions natively through `-c developer_instructions`, so setup reports native support and no `AGENTS.md` edit is needed. Codex file citations in the final response — `:codex-file-citation{path="..." purpose="output"}` — are delivered automatically as attachments by the bot. Do not send those files with `lark-cli` or another messaging CLI: that posts from a different app and cc-connect receives the file again as a user upload.
+
 ### Config switch
 
 Add this to `config.toml` if you want to disable agent-driven attachment send-back:

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -877,5 +878,73 @@ func TestLookupEffectiveBinding_NoIsolationUnbindsMissing(t *testing.T) {
 	}
 	if got := e.workspaceBindings.Lookup("project:test", channelKey); got != nil {
 		t.Errorf("expected missing workspace binding to be unbound without isolation, got %+v", got)
+	}
+}
+
+type workspaceMemoryAgent struct {
+	namedTestAgent
+	workDir string
+}
+
+func (a *workspaceMemoryAgent) ProjectMemoryFile() string {
+	return filepath.Join(a.workDir, "AGENTS.md")
+}
+
+func (a *workspaceMemoryAgent) GlobalMemoryFile() string { return "" }
+
+// TestSetupMemoryFileForMessage_MultiWorkspaceWritesActiveWorkspace is the
+// regression test for /cron setup and /bind setup writing to the root agent's
+// memory file (the process cwd) instead of the active workspace's AGENTS.md.
+// The workspace agent is the one that actually reads that file.
+func TestSetupMemoryFileForMessage_MultiWorkspaceWritesActiveWorkspace(t *testing.T) {
+	rootDir := t.TempDir()
+	wsDir := t.TempDir()
+	agentName := "workspace-setup-memory-test"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		dir, _ := opts["work_dir"].(string)
+		return &workspaceMemoryAgent{
+			namedTestAgent: namedTestAgent{name: agentName},
+			workDir:        dir,
+		}, nil
+	})
+
+	rootAgent := &workspaceMemoryAgent{
+		namedTestAgent: namedTestAgent{name: agentName},
+		workDir:        rootDir,
+	}
+	sessionPath := filepath.Join(t.TempDir(), "sessions.json")
+	e := NewEngine("test", rootAgent, []Platform{&stubPlatformEngine{n: "test"}}, sessionPath, LangEnglish)
+	e.SetMultiWorkspace(rootDir, filepath.Join(t.TempDir(), "bindings.json"))
+
+	channelID := "chan-setup"
+	channelKey := workspaceChannelKey("test", channelID)
+	e.workspaceBindings.Bind("project:test", channelKey, "chan-setup", wsDir)
+
+	msg := &Message{
+		SessionKey: "test:" + channelID + ":user",
+		Platform:   "test",
+		ChannelKey: channelID,
+	}
+	result, baseName, err := e.setupMemoryFileForMessage(msg)
+	if err != nil {
+		t.Fatalf("setupMemoryFileForMessage: %v", err)
+	}
+	if result != setupOK {
+		t.Fatalf("result = %d, want setupOK", result)
+	}
+	if baseName != "AGENTS.md" {
+		t.Fatalf("baseName = %q, want AGENTS.md", baseName)
+	}
+
+	wsFile := filepath.Join(wsDir, "AGENTS.md")
+	content, err := os.ReadFile(wsFile)
+	if err != nil {
+		t.Fatalf("workspace AGENTS.md not written: %v", err)
+	}
+	if !strings.Contains(string(content), ccConnectInstructionMarker) {
+		t.Fatal("workspace AGENTS.md missing cc-connect marker")
+	}
+	if _, err := os.Stat(filepath.Join(rootDir, "AGENTS.md")); !os.IsNotExist(err) {
+		t.Fatalf("root AGENTS.md must not be written, stat err = %v", err)
 	}
 }

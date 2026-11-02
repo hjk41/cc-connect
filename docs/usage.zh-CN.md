@@ -703,6 +703,8 @@ speed = 0.96
 
 如果你以前已经执行过 setup，也建议升级后重新执行一次，以刷新到最新指令。
 
+Codex（0.166+）现在会通过 `-c developer_instructions` 原生注入这些指令，setup 会直接报告 native，不需要再改 `AGENTS.md`。Codex 最终回复里的文件标记 `:codex-file-citation{path="..." purpose="output"}` 会由机器人自动作为附件发出。不要再让 Agent 用 `lark-cli` 或其他消息 CLI 发这些文件：那会用另一个应用的身份投递，而且 cc-connect 会把文件当成用户上传再收一遍。
+
 ### 配置开关
 
 如果你想禁用 agent 主动回传附件，可以在 `config.toml` 里加入：

@@ -371,7 +371,14 @@ func main() {
 				proj.Agent.Options["run_as_env"] = proj.RunAsEnv
 			}
 		}
-		agent, err := core.CreateAgent(proj.Agent.Type, buildAgentOptions(cfg.DataDir, proj))
+		agentOpts := buildAgentOptions(cfg.DataDir, proj)
+		// Pass the operator's language to agents that build a localized native
+		// system prompt (Claude Code, Codex). An explicit per-project
+		// options.language still wins.
+		if _, ok := agentOpts["language"]; !ok && cfg.Language != "" {
+			agentOpts["language"] = cfg.Language
+		}
+		agent, err := core.CreateAgent(proj.Agent.Type, agentOpts)
 		if err != nil {
 			slog.Error("failed to create agent", "project", proj.Name, "error", err)
 			os.Exit(1)

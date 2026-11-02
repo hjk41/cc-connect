@@ -56,7 +56,7 @@ func TestAvailableReasoningEfforts_IncludesCodexGPT56Levels(t *testing.T) {
 }
 
 func TestBuildExecArgs_IncludesReasoningEffort(t *testing.T) {
-	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "o3", "high", "full-auto", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "o3", "high", "full-auto", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestBuildExecArgs_IncludesReasoningEffort(t *testing.T) {
 func TestBuildExecArgs_GPT61SolHighNewAndResume(t *testing.T) {
 	for _, sessionID := range []string{"", "existing-thread"} {
 		t.Run("session="+sessionID, func(t *testing.T) {
-			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "gpt-6.1-sol", "high", "full-auto", sessionID, "", nil, "", "", "")
+			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "gpt-6.1-sol", "high", "full-auto", sessionID, "", nil, "", "", "", "")
 			if err != nil {
 				t.Fatalf("newCodexSession: %v", err)
 			}
@@ -114,7 +114,7 @@ func TestBuildExecArgs_GPT61SolHighNewAndResume(t *testing.T) {
 }
 
 func TestBuildExecArgs_IncludesBaseURL(t *testing.T) {
-	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "o3", "high", "full-auto", "", "https://custom.api.example.com", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "o3", "high", "full-auto", "", "https://custom.api.example.com", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBuildExecArgs_IncludesBaseURL(t *testing.T) {
 }
 
 func TestBuildExecArgs_IncludesModelProvider(t *testing.T) {
-	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "openai/gpt-5.3-codex", "", "full-auto", "", "https://router.example.com/api/v1", nil, "shengsuanyun", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "openai/gpt-5.3-codex", "", "full-auto", "", "https://router.example.com/api/v1", nil, "shengsuanyun", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestBuildExecArgs_IncludesModelProvider(t *testing.T) {
 }
 
 func TestBuildExecArgs_ResumeOmitsCdFlag(t *testing.T) {
-	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", "full-auto", "thread-abc", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", "full-auto", "thread-abc", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestBuildExecArgs_ModeMapping(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
-			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", tc.mode, "", "", nil, "", "", "")
+			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", tc.mode, "", "", nil, "", "", "", "")
 			if err != nil {
 				t.Fatalf("newCodexSession: %v", err)
 			}
@@ -259,7 +259,7 @@ func TestBuildExecArgs_ResumeUsesSandboxModeConfigOverride(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.mode, func(t *testing.T) {
-			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", tc.mode, "thread-abc", "", nil, "", "", "")
+			cs, err := newCodexSession(context.Background(), "codex", nil, "/tmp/project", "", "", tc.mode, "thread-abc", "", nil, "", "", "", "")
 			if err != nil {
 				t.Fatalf("newCodexSession: %v", err)
 			}
@@ -373,7 +373,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
 
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestRefreshContextUsageFromRollout_UsesLastTokenCount(t *testing.T) {
 		t.Fatalf("write rollout: %v", err)
 	}
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", sessionID, "", []string{"CODEX_HOME=" + codexHome}, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", sessionID, "", []string{"CODEX_HOME=" + codexHome}, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -458,7 +458,7 @@ func TestSend_WithImages_PassesImageArgsAndDefaultPrompt(t *testing.T) {
 	t.Setenv("CODEX_ARGS_FILE", argsFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -502,7 +502,7 @@ func TestSend_WithImages_PassesImageArgsAndDefaultPrompt(t *testing.T) {
 // TestCodexSession_ThreadStartedEmitsSessionID 验证首轮启动时立即上报会话 ID，
 // 使 Engine 可以在 turn.completed 之前持久化绑定关系。
 func TestCodexSession_ThreadStartedEmitsSessionID(t *testing.T) {
-	cs, err := newCodexSession(context.Background(), "codex", nil, t.TempDir(), "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, t.TempDir(), "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -549,7 +549,7 @@ func TestSend_ResumeWithImages_PlacesSessionBeforeImageFlags(t *testing.T) {
 	t.Setenv("CODEX_ARGS_FILE", argsFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-123", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-123", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -602,7 +602,7 @@ func TestSend_UsesStdinForMultilinePrompt(t *testing.T) {
 	t.Setenv("CODEX_STDIN_FILE", stdinFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-stdin", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-stdin", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -647,7 +647,7 @@ while (-not (Test-Path $env:CODEX_RELEASE_FILE)) { Start-Sleep -Milliseconds 10 
 	t.Setenv("CODEX_RELEASE_FILE", releaseFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-busy", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-busy", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -709,7 +709,7 @@ func TestSend_PrependsProjectPromptOnFreshSession(t *testing.T) {
 	t.Setenv("CODEX_STDIN_FILE", stdinFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "You are Linear Reporter.", "Always invoke linear-bug-intake.")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "You are Linear Reporter.", "Always invoke linear-bug-intake.", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -761,7 +761,7 @@ func TestSend_HandlesLargeJSONLines(t *testing.T) {
 	t.Setenv("CODEX_PAYLOAD_FILE", payloadFile)
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -987,7 +987,7 @@ func indexOf(args []string, target string) int {
 }
 
 func TestCodexSession_ContinueSessionTreatedAsFresh(t *testing.T) {
-	s, err := newCodexSession(context.Background(), "codex", nil, "/tmp", "", "", "full-auto", core.ContinueSession, "", nil, "", "", "")
+	s, err := newCodexSession(context.Background(), "codex", nil, "/tmp", "", "", "full-auto", core.ContinueSession, "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -1029,7 +1029,7 @@ func TestClose_ForceKillsProcessGroupAfterGracefulTimeout(t *testing.T) {
 		codexSessionForceKillWait = oldForceKillWait
 	})
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -1102,7 +1102,7 @@ func TestClose_ForceKillsProcessStillRunningAfterTurnCompleted(t *testing.T) {
 		codexSessionForceKillWait = oldForceKillWait
 	})
 
-	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatalf("newCodexSession: %v", err)
 	}
@@ -1218,7 +1218,7 @@ while (-not (Test-Path $env:CODEX_RELEASE_FILE)) { Start-Sleep -Milliseconds 10 
 `)
 	t.Setenv("CODEX_RELEASE_FILE", release)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cs, err := newCodexSession(context.Background(), "codex", nil, work, "", "", "", "", "", nil, "", "", "")
+	cs, err := newCodexSession(context.Background(), "codex", nil, work, "", "", "", "", "", nil, "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

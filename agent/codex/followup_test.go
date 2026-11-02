@@ -43,7 +43,7 @@ if ($prompt -eq 'first') {
 			t.Setenv("CODEX_STARTS_FILE", startsFile)
 			t.Setenv("CODEX_RELEASE_FILE", releaseFile)
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-			cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-followup", "", nil, "", "", "")
+			cs, err := newCodexSession(context.Background(), "codex", nil, workDir, "", "", "", "thread-followup", "", nil, "", "", "", "")
 			if err != nil {
 				t.Fatal(err)
 			}

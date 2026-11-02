@@ -24,29 +24,30 @@ import (
 // codexSession manages a multi-turn Codex conversation.
 // First Send() uses `codex exec`, subsequent ones use `codex exec resume <threadID>`.
 type codexSession struct {
-	workDir        string
-	model          string
-	effort         string
-	mode           string
-	baseURL        string   // provider base URL; passed as -c openai_base_url=<url>
-	modelProvider  string   // Codex model_provider name; passed as -c model_provider=<name>
-	cmd            string   // CLI binary, default "codex"
-	cliExtraArgs   []string // extra args from cmd, prepended before exec args
-	extraEnv       []string
-	promptPreamble string
-	events         chan core.Event
-	threadID       atomic.Value // stores string — Codex thread_id
-	ctx            context.Context
-	cancel         context.CancelFunc
-	wg             sync.WaitGroup
-	alive          atomic.Bool
-	turnInFlight   atomic.Bool
-	turnMu         sync.Mutex
-	turnDone       chan struct{}
-	turnCompleted  bool // terminal event received; process may still hold the writer lock
-	closeOnce      sync.Once
-	cmdMu          sync.Mutex
-	cmds           map[*exec.Cmd]struct{}
+	workDir         string
+	model           string
+	effort          string
+	mode            string
+	baseURL         string   // provider base URL; passed as -c openai_base_url=<url>
+	modelProvider   string   // Codex model_provider name; passed as -c model_provider=<name>
+	cmd             string   // CLI binary, default "codex"
+	cliExtraArgs    []string // extra args from cmd, prepended before exec args
+	extraEnv        []string
+	promptPreamble  string
+	developerPrompt string
+	events          chan core.Event
+	threadID        atomic.Value // stores string — Codex thread_id
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
+	alive           atomic.Bool
+	turnInFlight    atomic.Bool
+	turnMu          sync.Mutex
+	turnDone        chan struct{}
+	turnCompleted   bool // terminal event received; process may still hold the writer lock
+	closeOnce       sync.Once
+	cmdMu           sync.Mutex
+	cmds            map[*exec.Cmd]struct{}
 
 	pendingMsgs []string // buffered agent_message texts awaiting classification
 
@@ -59,6 +60,8 @@ type codexSession struct {
 	contextMu    sync.RWMutex
 	contextUsage *core.ContextUsage
 	sessionFile  string
+
+	pendingAttachments []string
 }
 
 var codexSessionCloseTimeout = 8 * time.Second
@@ -91,7 +94,7 @@ func prependCodexPromptPreamble(prompt string, preamble string) string {
 	return "Before answering, follow these project-level instructions for this cc-connect session. They are not user content.\n\n" + preamble + "\n\n---\n\nUser message:\n" + prompt
 }
 
-func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string) (*codexSession, error) {
+func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, workDir, model, effort, mode, resumeID, baseURL string, extraEnv []string, modelProvider string, systemPrompt string, appendPrompt string, developerPrompt string) (*codexSession, error) {
 	spec, err := resolveCodexBackendMode(mode, "exec")
 	if err != nil {
 		return nil, err
@@ -99,20 +102,21 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	cs := &codexSession{
-		workDir:        workDir,
-		model:          model,
-		effort:         effort,
-		mode:           spec.Key,
-		baseURL:        baseURL,
-		modelProvider:  modelProvider,
-		cmd:            cliBin,
-		cliExtraArgs:   cliExtraArgs,
-		extraEnv:       extraEnv,
-		promptPreamble: buildCodexPromptPreamble(systemPrompt, appendPrompt),
-		events:         make(chan core.Event, 64),
-		ctx:            sessionCtx,
-		cancel:         cancel,
-		cmds:           make(map[*exec.Cmd]struct{}),
+		workDir:         workDir,
+		model:           model,
+		effort:          effort,
+		mode:            spec.Key,
+		baseURL:         baseURL,
+		modelProvider:   modelProvider,
+		cmd:             cliBin,
+		cliExtraArgs:    cliExtraArgs,
+		extraEnv:        extraEnv,
+		promptPreamble:  buildCodexPromptPreamble(systemPrompt, appendPrompt),
+		developerPrompt: developerPrompt,
+		events:          make(chan core.Event, 64),
+		ctx:             sessionCtx,
+		cancel:          cancel,
+		cmds:            make(map[*exec.Cmd]struct{}),
 	}
 	cs.alive.Store(true)
 
@@ -343,6 +347,7 @@ func (cs *codexSession) buildExecArgs(prompt string, imagePaths []string) ([]str
 	if cs.effort != "" {
 		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", cs.effort))
 	}
+	args = append(args, codexDeveloperArgs(cs.developerPrompt)...)
 
 	if isResume {
 		args = append(args, tid)
@@ -472,6 +477,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 
 	case "turn.started":
 		cs.pendingMsgs = cs.pendingMsgs[:0]
+		cs.pendingAttachments = cs.pendingAttachments[:0]
 		cs.contextMu.Lock()
 		cs.contextUsage = nil
 		cs.contextMu.Unlock()
@@ -487,7 +493,14 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		cs.markTurnCompleted()
 		cs.refreshContextUsageFromRollout()
 		cs.flushPendingAsText()
-		evt := core.Event{Type: core.EventResult, SessionID: cs.CurrentSessionID(), Done: true}
+		attachments := dedupeAttachmentPaths(cs.pendingAttachments)
+		cs.pendingAttachments = cs.pendingAttachments[:0]
+		evt := core.Event{
+			Type:            core.EventResult,
+			SessionID:       cs.CurrentSessionID(),
+			Done:            true,
+			AttachmentPaths: attachments,
+		}
 		select {
 		case cs.events <- evt:
 		case <-cs.ctx.Done():
@@ -496,6 +509,7 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 
 	case "turn.failed":
 		cs.markTurnCompleted()
+		cs.pendingAttachments = cs.pendingAttachments[:0]
 		errMsg := ""
 		if errObj, ok := raw["error"].(map[string]any); ok {
 			errMsg, _ = errObj["message"].(string)
@@ -633,7 +647,11 @@ func (cs *codexSession) handleItemCompleted(raw map[string]any) {
 	case "agent_message", "message":
 		text := extractItemText(item, "content", "output_text")
 		if text != "" {
-			cs.pendingMsgs = append(cs.pendingMsgs, text)
+			clean, attachments := codexOutputAttachments(text, cs.workDir)
+			if clean != "" {
+				cs.pendingMsgs = append(cs.pendingMsgs, clean)
+			}
+			cs.pendingAttachments = append(cs.pendingAttachments, attachments...)
 		}
 
 	case "command_execution":

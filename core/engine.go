@@ -12,6 +12,8 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"mime"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -4417,7 +4419,12 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	if inj, ok := agent.(SessionEnvInjector); ok {
 		envVars := []string{
 			"CC_PROJECT=" + e.name,
+			// CC_SESSION_KEY is the historical name, but Codex's default shell
+			// environment policy filters *KEY* (and *TOKEN*), so a Codex agent
+			// never sees it. CC_SESSION is the unfiltered alias every CLI
+			// subcommand falls back to.
 			"CC_SESSION_KEY=" + ccKey,
+			"CC_SESSION=" + ccKey,
 		}
 		if e.dataDir != "" {
 			envVars = append(envVars, "CC_DATA_DIR="+e.dataDir)
@@ -5267,6 +5274,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 					for _, chunk := range SplitMessageCodeFenceAware(fullResponse, maxPlatformMessageLen) {
 						e.send(p, replyCtx, chunk)
 					}
+				}
+				if len(event.AttachmentPaths) > 0 {
+					e.sendResultAttachments(p, replyCtx, event.AttachmentPaths)
 				}
 
 				// Safety note: concurrent writes to session.History by the
@@ -6301,18 +6311,25 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				fullResponse = strings.Join(textParts, "")
 			}
 			if fullResponse == "" {
-				state.mu.Lock()
-				cancelled := state.turnCancelled
-				state.turnCancelled = false // read-and-clear
-				stopped := state.stopped
-				state.mu.Unlock()
-				if cancelled || stopped {
-					// User-aborted/cancelled mid-turn with no agent output: stay silent —
-					// the /stop ack already told the user. Reuses the NO_REPLY
-					// silent-delivery path so no "(empty response)" noise is sent.
+				if len(event.AttachmentPaths) > 0 {
+					// The final answer consisted only of citation markup that
+					// the agent adapter stripped. Attachments are the payload,
+					// so suppress the "(empty response)" notice.
 					fullResponse = "NO_REPLY"
 				} else {
-					fullResponse = e.i18n.T(MsgEmptyResponse)
+					state.mu.Lock()
+					cancelled := state.turnCancelled
+					state.turnCancelled = false // read-and-clear
+					stopped := state.stopped
+					state.mu.Unlock()
+					if cancelled || stopped {
+						// User-aborted/cancelled mid-turn with no agent output: stay silent —
+						// the /stop ack already told the user. Reuses the NO_REPLY
+						// silent-delivery path so no "(empty response)" noise is sent.
+						fullResponse = "NO_REPLY"
+					} else {
+						fullResponse = e.i18n.T(MsgEmptyResponse)
+					}
 				}
 			}
 
@@ -6655,6 +6672,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 
 			if elapsed := time.Since(replyStart); elapsed >= slowPlatformSend {
 				slog.Warn("slow final reply send", "platform", p.Name(), "elapsed", elapsed, "response_len", len(fullResponse))
+			}
+
+			// Deliver files the agent produced this turn (Codex output file
+			// citations). This runs even for a silent text reply: the citation
+			// marker may have been the only content the model emitted.
+			if len(event.AttachmentPaths) > 0 {
+				e.sendResultAttachments(p, replyCtx, event.AttachmentPaths)
 			}
 
 			// TTS: async voice reply if enabled (skipped for silent replies)
@@ -12454,6 +12478,84 @@ func (e *Engine) SendTTSToSession(sessionKey, text string) error {
 	return e.synthesizeAndSendTTS(p, replyCtx, text)
 }
 
+// autoAttachmentMaxBytes caps files delivered from agent-produced citations.
+// It mirrors the default max_attachment_size_mb (50 MiB) used by
+// `cc-connect send`; platform-specific limits may be smaller and are enforced
+// by the platform adapter.
+const autoAttachmentMaxBytes int64 = 50 << 20
+
+// sendResultAttachments delivers files the agent produced during a turn (for
+// Codex, purpose="output" :codex-file-citation entries) through the same
+// FileSender path as an explicit attachment send. Failures are logged and do
+// not fail the turn: the text reply has already been delivered.
+func (e *Engine) sendResultAttachments(p Platform, replyCtx any, paths []string) {
+	if len(paths) == 0 {
+		return
+	}
+	if !e.attachmentSendEnabled {
+		slog.Debug("result attachments suppressed: attachment_send is off",
+			"platform", p.Name(), "count", len(paths))
+		return
+	}
+	fileSender, ok := p.(FileSender)
+	if !ok {
+		slog.Warn("result attachments skipped: platform has no FileSender",
+			"platform", p.Name(), "count", len(paths))
+		return
+	}
+
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		if _, dup := seen[path]; dup {
+			continue
+		}
+		seen[path] = struct{}{}
+
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			slog.Warn("result attachment skipped: not a regular file",
+				"platform", p.Name(), "path", path, "error", err)
+			continue
+		}
+		if info.Size() > autoAttachmentMaxBytes {
+			slog.Warn("result attachment skipped: exceeds size cap",
+				"platform", p.Name(), "path", path,
+				"size", info.Size(), "max_bytes", autoAttachmentMaxBytes)
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			slog.Warn("result attachment skipped: read failed",
+				"platform", p.Name(), "path", path, "error", err)
+			continue
+		}
+		name := filepath.Base(path)
+		mimeType := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+		if mimeType == "" {
+			mimeType = http.DetectContentType(data)
+		}
+		if err := e.waitOutgoing(p); err != nil {
+			slog.Warn("result attachment skipped: outgoing rate limit",
+				"platform", p.Name(), "path", path, "error", err)
+			continue
+		}
+		if err := fileSender.SendFile(e.ctx, replyCtx, FileAttachment{
+			MimeType: mimeType,
+			Data:     data,
+			FileName: name,
+		}); err != nil {
+			slog.Error("result attachment send failed",
+				"platform", p.Name(), "path", path, "error", err)
+			continue
+		}
+		slog.Info("result attachment sent",
+			"platform", p.Name(), "path", path, "bytes", len(data))
+	}
+}
+
 // SendAudiosToSession routes outbound audio attachments to the
 // platform's AudioSender (native voice bubble + transcoding) when
 // supported, falling back to FileSender otherwise. Used by
@@ -15339,7 +15441,7 @@ func (e *Engine) cmdCronMute(p Platform, msg *Message, args []string, mute bool)
 }
 
 func (e *Engine) cmdCronSetup(p Platform, msg *Message) {
-	result, baseName, err := e.setupMemoryFile()
+	result, baseName, err := e.setupMemoryFileForMessage(msg)
 	switch result {
 	case setupNative:
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupNative))
@@ -16977,7 +17079,10 @@ func (e *Engine) HandleRelay(ctx context.Context, fromProject, sourceSessionKey,
 	if inj, ok := agent.(SessionEnvInjector); ok {
 		envVars := []string{
 			"CC_PROJECT=" + e.name,
+			// See getOrCreateInteractiveState: Codex filters *KEY*, so relay
+			// agents also need the unfiltered CC_SESSION alias.
 			"CC_SESSION_KEY=" + sourceSessionKey,
+			"CC_SESSION=" + sourceSessionKey,
 		}
 		if exePath, err := os.Executable(); err == nil {
 			binDir := filepath.Dir(exePath)
@@ -17316,12 +17421,53 @@ func agentHasNativeSystemPrompt(agent Agent) bool {
 
 // setupMemoryFile appends AgentSystemPrompt() to the agent's project memory
 // file. It returns the result, the filename (for messages), and any error.
+//
+// Prefer setupMemoryFileForMessage: in multi-workspace mode the root agent's
+// memory file lives outside the active workspace, so writing there is invisible
+// to the agent CLI actually serving the conversation.
 func (e *Engine) setupMemoryFile() (setupResult, string, error) {
-	if agentHasNativeSystemPrompt(e.agent) {
+	return e.setupMemoryFileFor(e.agent)
+}
+
+// setupMemoryFileForMessage resolves the agent that owns the current
+// conversation's workspace and writes the cc-connect instruction block into
+// that agent's project memory file.
+func (e *Engine) setupMemoryFileForMessage(msg *Message) (setupResult, string, error) {
+	return e.setupMemoryFileFor(e.setupAgentForMessage(msg))
+}
+
+// setupAgentForMessage returns the agent whose project memory file should be
+// updated for msg. In multi-workspace mode each workspace has its own agent
+// clone and therefore its own AGENTS.md/CLAUDE.md; the root agent's file is
+// the process cwd and is never loaded by the workspace agent. Falls back to
+// the root agent when no usable workspace binding exists.
+func (e *Engine) setupAgentForMessage(msg *Message) Agent {
+	if !e.multiWorkspace || msg == nil || e.workspaceBindings == nil {
+		return e.agent
+	}
+	channelKey := e.effectiveWorkspaceChannelKey(msg)
+	b, _, usable := e.lookupEffectiveWorkspaceBinding(channelKey)
+	if !usable || b == nil || strings.TrimSpace(b.Workspace) == "" {
+		return e.agent
+	}
+	workspace := normalizeWorkspacePath(b.Workspace)
+	agent, _, err := e.getOrCreateWorkspaceAgent(workspace)
+	if err != nil {
+		slog.Warn("setup: resolve workspace agent, falling back to root agent",
+			"workspace", workspace, "error", err)
+		return e.agent
+	}
+	return agent
+}
+
+// setupMemoryFileFor appends AgentSystemPrompt() to agent's project memory
+// file. It returns the result, the filename (for messages), and any error.
+func (e *Engine) setupMemoryFileFor(agent Agent) (setupResult, string, error) {
+	if agentHasNativeSystemPrompt(agent) {
 		return setupNative, "", nil
 	}
 
-	mp, ok := e.agent.(MemoryFileProvider)
+	mp, ok := agent.(MemoryFileProvider)
 	if !ok {
 		return setupNoMemory, "", nil
 	}
@@ -17369,7 +17515,7 @@ func (e *Engine) setupMemoryFile() (setupResult, string, error) {
 }
 
 func (e *Engine) cmdBindSetup(p Platform, msg *Message) {
-	result, baseName, err := e.setupMemoryFile()
+	result, baseName, err := e.setupMemoryFileForMessage(msg)
 	switch result {
 	case setupNative:
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSetupNative))

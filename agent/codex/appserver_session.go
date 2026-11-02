@@ -143,18 +143,19 @@ type appServerRequestUserInputAnswer struct {
 }
 
 type appServerSession struct {
-	allowedTools   []string
-	cliBin         string
-	cliExtraArgs   []string
-	url            string
-	workDir        string
-	model          string
-	effort         string
-	baseURL        string
-	modelProvider  string
-	extraEnv       []string
-	codexHome      string
-	promptPreamble string
+	allowedTools    []string
+	cliBin          string
+	cliExtraArgs    []string
+	url             string
+	workDir         string
+	model           string
+	effort          string
+	baseURL         string
+	modelProvider   string
+	extraEnv        []string
+	codexHome       string
+	promptPreamble  string
+	developerPrompt string
 
 	events       chan core.Event
 	eventsMu     sync.RWMutex // publishers share the lock; Close owns channel closure
@@ -183,15 +184,16 @@ type appServerSession struct {
 	wg        sync.WaitGroup
 	readDone  chan struct{} // drain stdout before cmd.Wait closes its pipe
 
-	stateMu        sync.Mutex
-	pendingMsgs    []string
-	currentTurn    string
-	turnRevision   uint64 // terminal notifications can precede the turn/start response
-	completedTurn  string
-	preambleSent   bool
-	turnStarting   bool
-	compactDone    chan struct{} // guarded by stateMu; only the Send caller emits completion
-	compactTimeout time.Duration // zero uses the production timeout
+	stateMu            sync.Mutex
+	pendingMsgs        []string
+	pendingAttachments []string
+	currentTurn        string
+	turnRevision       uint64 // terminal notifications can precede the turn/start response
+	completedTurn      string
+	preambleSent       bool
+	turnStarting       bool
+	compactDone        chan struct{} // guarded by stateMu; only the Send caller emits completion
+	compactTimeout     time.Duration // zero uses the production timeout
 
 	runtimeMu sync.RWMutex
 	usage     *core.UsageReport
@@ -212,7 +214,7 @@ const (
 func newAppServerSession(
 	ctx context.Context, cliBin string, cliExtraArgs []string,
 	url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string,
-	extraEnv []string, codexHome, systemPrompt, appendPrompt string, allowedTools []string,
+	extraEnv []string, codexHome, systemPrompt, appendPrompt, developerPrompt string, allowedTools []string,
 ) (*appServerSession, error) {
 	spec, err := resolveCodexMode(mode)
 	if err != nil {
@@ -233,6 +235,7 @@ func newAppServerSession(
 		extraEnv:         append([]string(nil), extraEnv...),
 		codexHome:        strings.TrimSpace(codexHome),
 		promptPreamble:   buildCodexPromptPreamble(systemPrompt, appendPrompt),
+		developerPrompt:  developerPrompt,
 		events:           make(chan core.Event, 128),
 		ctx:              sessionCtx,
 		cancel:           cancel,
@@ -301,6 +304,7 @@ func (s *appServerSession) connect() error {
 	if baseURL := strings.TrimSpace(s.baseURL); baseURL != "" {
 		args = append(args, "-c", fmt.Sprintf("openai_base_url=%q", baseURL))
 	}
+	args = append(args, codexDeveloperArgs(s.developerPrompt)...)
 	bin, err := resolveCodexExecutable(s.cliBin)
 	if err != nil {
 		return fmt.Errorf("codex app-server resolve CLI: %w", err)
@@ -1454,8 +1458,12 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 		text, _ := item["text"].(string)
 		if strings.TrimSpace(text) != "" {
+			clean, attachments := codexOutputAttachments(text, s.workDir)
 			s.stateMu.Lock()
-			s.pendingMsgs = append(s.pendingMsgs, text)
+			if clean != "" {
+				s.pendingMsgs = append(s.pendingMsgs, clean)
+			}
+			s.pendingAttachments = append(s.pendingAttachments, attachments...)
 			s.stateMu.Unlock()
 		}
 
@@ -1756,6 +1764,7 @@ func (s *appServerSession) beginTurn(turnID string) {
 	}
 	s.currentTurn = turnID
 	s.pendingMsgs = s.pendingMsgs[:0]
+	s.pendingAttachments = s.pendingAttachments[:0]
 	s.stateMu.Unlock()
 	s.storeContextUsage(nil)
 }
@@ -1775,9 +1784,16 @@ func (s *appServerSession) completeTurn(turnID string) {
 	s.completedTurn = turnID
 	s.currentTurn = ""
 	s.turnRevision++
+	attachments := append([]string(nil), s.pendingAttachments...)
+	s.pendingAttachments = s.pendingAttachments[:0]
 	s.stateMu.Unlock()
 	s.flushPendingAsText()
-	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
+	s.emit(core.Event{
+		Type:            core.EventResult,
+		SessionID:       s.CurrentSessionID(),
+		Done:            true,
+		AttachmentPaths: dedupeAttachmentPaths(attachments),
+	})
 }
 
 // failTurn ends the active turn after a failure. When turnID is non-empty the
@@ -1797,6 +1813,7 @@ func (s *appServerSession) failTurn(turnID string, err error) bool {
 	s.currentTurn = ""
 	s.turnRevision++
 	s.pendingMsgs = s.pendingMsgs[:0]
+	s.pendingAttachments = s.pendingAttachments[:0]
 	s.stateMu.Unlock()
 	s.emitError(err)
 	return true

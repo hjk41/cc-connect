@@ -111,7 +111,7 @@ func TestExecBackend_RejectsInteractiveModesBeforeSessionStart(t *testing.T) {
 			check(err)
 			_, err = New(map[string]any{"cmd": bin, "backend": "exec", "mode": mode})
 			check(err)
-			_, err = newCodexSession(context.Background(), bin, nil, t.TempDir(), "", "", mode, "", "", nil, "", "", "")
+			_, err = newCodexSession(context.Background(), bin, nil, t.TempDir(), "", "", mode, "", "", nil, "", "", "", "")
 			check(err)
 			_, err = (&codexSession{mode: mode}).buildExecArgs("hello", nil)
 			check(err)
@@ -122,7 +122,7 @@ func TestExecBackend_RejectsInteractiveModesBeforeSessionStart(t *testing.T) {
 func TestExecBackend_LegacyAliasesKeepMappings(t *testing.T) {
 	for _, alias := range []string{"full-auto", "auto-edit", "auto", "edit"} {
 		for _, resumeID := range []string{"", "saved-thread"} {
-			s, err := newCodexSession(context.Background(), "codex", nil, ".", "", "", alias, resumeID, "", nil, "", "", "")
+			s, err := newCodexSession(context.Background(), "codex", nil, ".", "", "", alias, resumeID, "", nil, "", "", "", "")
 			if err != nil {
 				t.Fatal(err)
 			}
