@@ -1118,6 +1118,16 @@ app_secret = "your-feishu-app-secret"
 #                              # 都是独立事件，cc-connect 会在窗口内将它们合并成一条多图消息再分发；如果你的
 #                              # 网络或设备发送间隔超过 500ms 且仍被拆成多轮，可调高（如 800–1200ms）；如果
 #                              # 只是单图发送，希望响应更快，也可以适当调低。
+# render_mermaid = true        # Render complete Mermaid fences to local PNG images (default: true).
+#                              # Failed/disabled/incomplete diagrams keep their exact original source.
+#                              # 将完整的 Mermaid 代码块本地渲染为 PNG 图片（默认 true）；失败/关闭/不完整的图表保留原始代码。
+# mermaid_renderer = "cc-connect-mermaid"
+#                              # Renderer executable path or PATH name. Install tools/mermaid-renderer with `npm ci`;
+#                              # set CC_MERMAID_CHROME if Chrome/Chromium is not in a standard location.
+#                              # 渲染器可执行文件路径或 PATH 名称。在 tools/mermaid-renderer 中执行 `npm ci` 安装；
+#                              # 如果 Chrome/Chromium 不在标准位置，请设置 CC_MERMAID_CHROME。
+# mermaid_timeout_secs = 15    # Per-diagram render timeout in seconds (1..60, default: 15).
+#                              # 单张图表渲染超时秒数（1..60，默认 15）。
 
 # Lark (International Version) / Lark 国际版
 # Lark now supports WebSocket long-connection too; webhook mode is only needed

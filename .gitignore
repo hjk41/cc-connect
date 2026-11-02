@@ -52,6 +52,7 @@ config.*.toml
 # npm / pnpm (for npm package distribution and web admin)
 .npmrc
 package-lock.json
+!tools/mermaid-renderer/package-lock.json
 node_modules/
 .vite/
 

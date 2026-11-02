@@ -1,0 +1,8 @@
+sequenceDiagram
+    participant U as 用户
+    participant B as 飞书机器人
+    participant R as 本地渲染器
+    U->>B: 发送 Mermaid
+    B->>R: 渲染 PNG
+    R-->>B: 图片
+    B-->>U: 卡片图片

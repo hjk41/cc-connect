@@ -1,0 +1,31 @@
+#!/usr/bin/env node
+import { main } from './render.mjs';
+
+main(process.argv.slice(2)).catch((err) => {
+  process.stderr.write(`mermaid-renderer: ${safeCategory(err)}\n`);
+  process.exit(1);
+});
+
+function safeCategory(err) {
+  const code = err && typeof err === 'object' ? err.code : '';
+  switch (code) {
+    case 'EINVAL':
+      return 'invalid-arguments';
+    case 'ENOENT':
+      return 'missing-file-or-browser';
+    case 'EACCES':
+      return 'permission-denied';
+    case 'SOURCE_TOO_LARGE':
+      return 'source-too-large';
+    case 'DIRECTIVE_REJECTED':
+      return 'directive-rejected';
+    case 'BROWSER_MISSING':
+      return 'browser-missing';
+    case 'RENDER_FAILED':
+      return 'render-failed';
+    case 'TOO_LARGE':
+      return 'diagram-too-large';
+    default:
+      return 'render-failed';
+  }
+}

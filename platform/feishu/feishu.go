@@ -200,6 +200,14 @@ type Platform struct {
 	richCardImageFailed     map[string]struct{}
 	richCardImageUploadFunc func(context.Context, string) (string, error)
 
+	mermaidRenderer    string
+	mermaidTimeout     time.Duration
+	mermaidResolver    *mermaidResolver
+	mermaidRenderFunc  func(context.Context, string) (string, error)
+	mermaidUploadFunc  func(context.Context, []byte) (string, error)
+	mermaidTempDirBase string
+	mermaidLogOnce     sync.Once
+
 	// imageBatch coalesces consecutive image messages from the same session
 	// arriving within imageBatchWindow. Without this, sending N images in rapid
 	// succession from the Feishu mobile client (which posts each as a separate
@@ -456,6 +464,28 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		resourceChunkSize = 64 * 1024 * 1024
 	}
 
+	// Mermaid is best-effort: a missing renderer never blocks startup or
+	// ordinary replies. Failed diagrams retain their exact original source.
+	renderMermaid := true
+	if v, ok := opts["render_mermaid"].(bool); ok {
+		renderMermaid = v
+	}
+	mermaidRenderer := mermaidDefaultRenderer
+	if v, ok := opts["mermaid_renderer"].(string); ok && strings.TrimSpace(v) != "" {
+		mermaidRenderer = strings.TrimSpace(v)
+	}
+	mermaidTimeout := mermaidDefaultTimeout
+	if raw, ok := opts["mermaid_timeout_secs"]; ok {
+		secs, err := coerceMilliseconds(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: invalid mermaid_timeout_secs %v: %w", name, raw, err)
+		}
+		if secs < 1 || secs > 60 {
+			return nil, fmt.Errorf("%s: mermaid_timeout_secs must be between 1 and 60, got %d", name, secs)
+		}
+		mermaidTimeout = time.Duration(secs) * time.Second
+	}
+
 	// Webhook mode configuration (for Lark international version)
 	port, _ := opts["port"].(string)
 	if port == "" {
@@ -505,6 +535,12 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		resourceDownloadHTTP:       &http.Client{Timeout: 60 * time.Second},
 		resourceChunkSize:          resourceChunkSize,
 		resourceMaxBytes:           defaultResourceMaxBytes,
+		mermaidRenderer:            mermaidRenderer,
+		mermaidTimeout:             mermaidTimeout,
+	}
+	if renderMermaid {
+		settings := fmt.Sprintf("renderer=%s\x00timeout=%s\x00format=png-v1", mermaidRenderer, mermaidTimeout)
+		base.mermaidResolver = newMermaidResolver(settings, mermaidTimeout, base.renderMermaidSource)
 	}
 	if !useInteractiveCard {
 		base.self = base
@@ -3387,6 +3423,7 @@ func (p *Platform) Reply(ctx context.Context, rctx any, content string) error {
 	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
+	content = p.resolveOutgoingMarkdown(ctx, content, true)
 	msgType, msgBody := buildReplyContent(content)
 
 	if !p.shouldUseThreadOrReplyAPI(rc) {
@@ -3409,6 +3446,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 	}
 
 	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
+	content = p.resolveOutgoingMarkdown(ctx, content, true)
 	msgType, msgBody := buildReplyContent(content)
 	return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
 }
@@ -3432,6 +3470,7 @@ func (p *Platform) SendWithStatusFooter(ctx context.Context, rctx any, content, 
 		}
 		return p.Send(ctx, rctx, content)
 	}
+	content = p.resolveOutgoingMarkdown(ctx, content, true)
 	processedBody := sanitizeMarkdownURLs(preprocessFeishuMarkdown(content))
 	processedFooter := sanitizeMarkdownURLs(preprocessFeishuMarkdown(footer))
 	cardJSON := buildCardJSONWithStatusFooter(processedBody, processedFooter)
@@ -3641,6 +3680,16 @@ func detectMimeType(data []byte) string {
 	return "image/png"
 }
 
+// resolveOutgoingMarkdown applies the rich-card/streaming resolver to ordinary
+// replies as well. Messages that must stay plain text (@mentions) are left
+// untouched so Mermaid source is never converted to card image syntax there.
+func (p *Platform) resolveOutgoingMarkdown(ctx context.Context, content string, final bool) string {
+	if !containsMarkdown(content) || strings.Contains(content, `<at user_id=`) || strings.Contains(content, `<at id=`) {
+		return content
+	}
+	return p.ResolveRichCardMarkdown(ctx, content, final)
+}
+
 func buildReplyContent(content string) (msgType string, body string) {
 	// Feishu does not generate mention events for <at> tags in card/post
 	// messages sent by bots. Force MsgTypeText when a real mention is present
@@ -3703,7 +3752,7 @@ func countMarkdownTables(s string) int {
 // buildPostMdJSON builds a Feishu post message using the md tag,
 // which renders markdown at normal chat font size.
 func buildPostMdJSON(content string) string {
-	content = sanitizeMarkdownURLs(content)
+	content = sanitizeMarkdownURLs(normalizeFeishuMarkdown(content))
 	post := map[string]any{
 		"zh_cn": map[string]any{
 			"content": [][]map[string]any{
@@ -3721,20 +3770,32 @@ func buildPostMdJSON(content string) string {
 // which prevents rendering issues in Feishu card markdown.
 // Tables, headings, blockquotes, etc. are rendered natively by the card markdown element.
 func preprocessFeishuMarkdown(md string) string {
-	// Ensure ``` has a newline before it (unless at start of text)
+	// Ensure a run of three or more backticks has a newline before it (unless
+	// at the start of a line). Treat a whole run atomically: inserting inside a
+	// four-backtick fence would corrupt the marker and change fallback source.
 	var b strings.Builder
 	b.Grow(len(md) + 32)
-	for i := 0; i < len(md); i++ {
-		if i > 0 && md[i] == '`' && i+2 < len(md) && md[i+1] == '`' && md[i+2] == '`' && md[i-1] != '\n' {
+	for i := 0; i < len(md); {
+		if md[i] != '`' {
+			b.WriteByte(md[i])
+			i++
+			continue
+		}
+		j := i
+		for j < len(md) && md[j] == '`' {
+			j++
+		}
+		if j-i >= 3 && i > 0 && md[i-1] != '\n' {
 			b.WriteByte('\n')
 		}
-		b.WriteByte(md[i])
+		b.WriteString(md[i:j])
+		i = j
 	}
 	return b.String()
 }
 
 var markdownIndicators = []string{
-	"```", "**", "~~", "`", "\n- ", "\n* ", "\n1. ", "\n# ", "---",
+	"```", "**", "~~", "`", "\n- ", "\n* ", "\n1. ", "\n# ", "---", "![",
 }
 
 func containsMarkdown(s string) bool {
@@ -3825,6 +3886,10 @@ var mdLinkRe = regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
 // sanitizeMarkdownURLs rewrites markdown links with non-HTTP(S) schemes
 // to plain text, preventing Feishu API rejection (code 230001).
 func sanitizeMarkdownURLs(md string) string {
+	return transformOutsideFencedCode(md, sanitizeMarkdownURLsOutsideCode)
+}
+
+func sanitizeMarkdownURLsOutsideCode(md string) string {
 	var b strings.Builder
 	last := 0
 	for _, loc := range mdLinkRe.FindAllStringSubmatchIndex(md, -1) {
@@ -5298,6 +5363,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			sendContent = cardJSON
 		}
 	} else {
+		content = p.ResolveRichCardMarkdown(ctx, content, false)
 		cardJSON = buildPreviewCardJSON(content)
 		sendContent = cardJSON
 	}
@@ -5435,7 +5501,7 @@ func (p *Platform) StreamRichCardText(ctx context.Context, previewHandle any, fu
 	apiPath := fmt.Sprintf("/open-apis/cardkit/v1/cards/%s/elements/%s/content",
 		h.cardID, richCardMainTextElementID)
 	body := map[string]any{
-		"content":  fullText,
+		"content":  normalizeFeishuMarkdown(fullText),
 		"sequence": h.sequence,
 	}
 
@@ -5490,9 +5556,9 @@ func (p *Platform) UpdateMessage(ctx context.Context, previewHandle any, content
 	} else if payload, ok := core.ParseProgressCardPayload(content); ok {
 		cardJSON = buildProgressCardJSONFromPayload(payload)
 	} else {
-		processed := content
-		if containsMarkdown(content) {
-			processed = preprocessFeishuMarkdown(content)
+		processed := p.ResolveRichCardMarkdown(ctx, content, false)
+		if containsMarkdown(processed) {
+			processed = preprocessFeishuMarkdown(processed)
 		}
 		cardJSON = buildCardJSON(sanitizeMarkdownURLs(processed))
 	}
@@ -5526,6 +5592,7 @@ func (p *Platform) UpdateMessageWithStatusFooter(ctx context.Context, previewHan
 	// Mirror UpdateMessage's existing behavior: it does not resolve
 	// @mentions on the card-edit path either. SendWithStatusFooter does
 	// resolve since the matching Send path resolves on the chat-thread API.
+	content = p.ResolveRichCardMarkdown(ctx, content, false)
 	processedBody := sanitizeMarkdownURLs(preprocessFeishuMarkdown(content))
 	processedFooter := sanitizeMarkdownURLs(preprocessFeishuMarkdown(footer))
 	cardJSON := buildCardJSONWithStatusFooter(processedBody, processedFooter)
@@ -5638,6 +5705,9 @@ func (p *Platform) Stop() error {
 	}
 	// Flush any pending image batches so buffered images aren't lost on shutdown.
 	p.flushImageBatches()
+	if p.mermaidResolver != nil {
+		p.mermaidResolver.Stop()
+	}
 	return nil
 }
 
@@ -6686,6 +6756,9 @@ var blockedRichCardImagePrefixes = []netip.Prefix{
 // Streaming frames start uploads and strip unresolved images; final frames wait
 // briefly so resolved images can be embedded before the Done update.
 func (p *Platform) ResolveRichCardMarkdown(ctx context.Context, markdown string, final bool) string {
+	if p.mermaidResolver != nil {
+		markdown = p.mermaidResolver.Resolve(ctx, markdown, final)
+	}
 	if !strings.Contains(markdown, "![") {
 		return markdown
 	}
@@ -6708,35 +6781,37 @@ func (p *Platform) ResolveRichCardMarkdown(ctx context.Context, markdown string,
 
 func (p *Platform) replaceRichCardMarkdownImages(ctx context.Context, markdown string, pending map[*richCardImageUpload]struct{}) string {
 	seen := map[string]struct{}{}
-	return feishuCardImagePattern.ReplaceAllStringFunc(markdown, func(match string) string {
-		parts := feishuCardImagePattern.FindStringSubmatch(match)
-		if len(parts) != 3 {
-			return ""
-		}
-		alt, value := parts[1], parts[2]
-		if strings.HasPrefix(value, "img_") {
-			return match
-		}
-		if !isRemoteRichCardImageURL(value) {
-			return ""
-		}
-		if _, ok := seen[value]; !ok {
-			if len(seen) >= richCardImageMaxCount {
+	return transformOutsideFencedCode(markdown, func(segment string) string {
+		return feishuCardImagePattern.ReplaceAllStringFunc(segment, func(match string) string {
+			parts := feishuCardImagePattern.FindStringSubmatch(match)
+			if len(parts) != 3 {
 				return ""
 			}
-			seen[value] = struct{}{}
-		}
-		if imageKey, ok := p.richCardImageKey(value); ok {
-			return fmt.Sprintf("![%s](%s)", alt, imageKey)
-		}
-		if p.richCardImageFailedURL(value) {
+			alt, value := parts[1], parts[2]
+			if strings.HasPrefix(value, "img_") {
+				return match
+			}
+			if !isRemoteRichCardImageURL(value) {
+				return ""
+			}
+			if _, ok := seen[value]; !ok {
+				if len(seen) >= richCardImageMaxCount {
+					return ""
+				}
+				seen[value] = struct{}{}
+			}
+			if imageKey, ok := p.richCardImageKey(value); ok {
+				return fmt.Sprintf("![%s](%s)", alt, imageKey)
+			}
+			if p.richCardImageFailedURL(value) {
+				return ""
+			}
+			upload := p.ensureRichCardImageUpload(ctx, value)
+			if upload != nil && pending != nil {
+				pending[upload] = struct{}{}
+			}
 			return ""
-		}
-		upload := p.ensureRichCardImageUpload(ctx, value)
-		if upload != nil && pending != nil {
-			pending[upload] = struct{}{}
-		}
-		return ""
+		})
 	})
 }
 
@@ -7015,15 +7090,14 @@ func isMarkdownTableSeparator(line string) bool {
 
 func findMarkdownTablesOutsideCodeBlocks(text string) []markdownTextMatch {
 	lines := markdownLinesWithOffsets(text)
+	fenced := fencedCodeRanges(text)
 	var matches []markdownTextMatch
-	inCodeBlock := false
 	for i := 0; i < len(lines); i++ {
-		trimmed := strings.TrimSpace(lines[i].text)
-		if strings.HasPrefix(trimmed, "```") {
-			inCodeBlock = !inCodeBlock
+		if inRanges(lines[i].start, fenced) {
 			continue
 		}
-		if inCodeBlock || i+1 >= len(lines) || !isMarkdownTableRow(lines[i].text) || !isMarkdownTableSeparator(lines[i+1].text) {
+		if i+1 >= len(lines) || inRanges(lines[i+1].start, fenced) ||
+			!isMarkdownTableRow(lines[i].text) || !isMarkdownTableSeparator(lines[i+1].text) {
 			continue
 		}
 		start := lines[i].start
@@ -7071,37 +7145,37 @@ func stripInvalidFeishuCardImages(text string) string {
 	if !strings.Contains(text, "![") {
 		return text
 	}
-	return feishuCardImagePattern.ReplaceAllStringFunc(text, func(match string) string {
-		parts := feishuCardImagePattern.FindStringSubmatch(match)
-		if len(parts) == 3 && strings.HasPrefix(parts[2], "img_") {
-			return match
-		}
-		return ""
+	return transformOutsideFencedCode(text, func(segment string) string {
+		return feishuCardImagePattern.ReplaceAllStringFunc(segment, func(match string) string {
+			parts := feishuCardImagePattern.FindStringSubmatch(match)
+			if len(parts) == 3 && strings.HasPrefix(parts[2], "img_") {
+				return match
+			}
+			return ""
+		})
 	})
 }
 
 func protectFencedCodeBlocks(text string) (string, []string) {
-	var blocks []string
-	var b strings.Builder
-	for i := 0; i < len(text); {
-		start := strings.Index(text[i:], "```")
-		if start < 0 {
-			b.WriteString(text[i:])
-			break
-		}
-		start += i
-		end := strings.Index(text[start+3:], "```")
-		if end < 0 {
-			b.WriteString(text[i:])
-			break
-		}
-		end += start + 6
-		b.WriteString(text[i:start])
-		placeholder := fmt.Sprintf("\x00CC_FEISHU_CODE_BLOCK_%d\x00", len(blocks))
-		blocks = append(blocks, text[start:end])
-		b.WriteString(placeholder)
-		i = end
+	ranges := fencedCodeRanges(text)
+	if len(ranges) == 0 {
+		return text, nil
 	}
+	blocks := make([]string, 0, len(ranges))
+	var b strings.Builder
+	b.Grow(len(text))
+	last := 0
+	for _, r := range ranges {
+		if r.start < last || r.end > len(text) {
+			continue
+		}
+		b.WriteString(text[last:r.start])
+		placeholder := fmt.Sprintf("\x00CC_FEISHU_CODE_BLOCK_%d\x00", len(blocks))
+		blocks = append(blocks, text[r.start:r.end])
+		b.WriteString(placeholder)
+		last = r.end
+	}
+	b.WriteString(text[last:])
 	return b.String(), blocks
 }
 
@@ -7127,7 +7201,7 @@ func sanitizeCardMarkdownSegmentsForCard(texts []string) []string {
 	out := make([]string, len(texts))
 	remainingBudget := feishuCardTableLimit
 	for i, text := range texts {
-		prepared := sanitizeMarkdownURLs(preprocessFeishuMarkdown(text))
+		prepared := sanitizeMarkdownURLs(preprocessFeishuMarkdown(normalizeFeishuMarkdown(text)))
 		prepared = stripInvalidFeishuCardImages(prepared)
 		prepared = optimizeFeishuCardMarkdown(prepared)
 		prepared, remainingBudget = sanitizeCardMarkdownTables(prepared, remainingBudget)
