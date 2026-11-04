@@ -773,7 +773,12 @@ func TestSend_HandlesLargeJSONLines(t *testing.T) {
 
 	var gotTextLen int
 	var gotResult bool
-	timeout := time.After(5 * time.Second)
+	// Decoding an 11 MiB JSON line under -race can take far longer than the
+	// old 5 s budget on a loaded runner (2026-11-04: timed out on the Intel
+	// macOS CI runner while every local run was green). The budget exists to
+	// catch a hung read loop, not to measure machine speed; keep a generous
+	// ceiling without weakening the assertions below.
+	timeout := time.After(30 * time.Second)
 
 	for !gotResult {
 		select {
