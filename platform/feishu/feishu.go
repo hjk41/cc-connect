@@ -129,6 +129,7 @@ type Platform struct {
 	doneEmoji                  string
 	allowFrom                  string
 	allowChat                  string
+	allowGroupMembers          string
 	groupOnly                  bool
 	groupReplyAll              bool
 	respondToAtEveryoneAndHere bool
@@ -373,6 +374,12 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	allowFrom, _ := opts["allow_from"].(string)
 	core.CheckAllowFrom(name, allowFrom)
 	allowChat, _ := opts["allow_chat"].(string)
+	allowGroupMembers, _ := opts["allow_group_members"].(string)
+	for _, chatID := range strings.Split(allowGroupMembers, ",") {
+		if strings.TrimSpace(chatID) == "*" {
+			return nil, fmt.Errorf("%s: allow_group_members requires explicit group chat IDs, not '*'", name)
+		}
+	}
 	groupOnly, _ := opts["group_only"].(bool)
 	groupReplyAll, _ := opts["group_reply_all"].(bool)
 	// require_mention = false is equivalent to group_reply_all = true:
@@ -514,6 +521,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		doneEmoji:                  doneEmoji,
 		allowFrom:                  allowFrom,
 		allowChat:                  allowChat,
+		allowGroupMembers:          allowGroupMembers,
 		groupOnly:                  groupOnly,
 		groupReplyAll:              groupReplyAll,
 		respondToAtEveryoneAndHere: respondToAtEveryoneAndHere,
@@ -837,21 +845,18 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		userID = event.Event.Operator.OpenID
 	}
 
-	// Check allow_from filter: skip card actions from users not authorized to
-	// command the agent. This mirrors the plain-text message handler's check so
-	// that clicking a card button (cmd:/perm:/nav:/act:/askq:) cannot bypass
-	// the per-user allowlist when the chat-level allow_chat filter admits the
-	// chat (Issue #1852).
-	if userID == "" || !core.AllowList(p.allowFrom, userID) {
-		slog.Debug(p.tag()+": card action from unauthorized user", "user", userID)
-		return nil, nil
-	}
-
 	chatID := ""
 	messageID := ""
 	if event.Event.Context != nil {
 		chatID = event.Event.Context.OpenChatID
 		messageID = event.Event.Context.OpenMessageID
+	}
+	// Apply the same user/group-member policy as incoming messages. Use only
+	// Feishu's callback context for group grants, before any user-ID fallback.
+	// Card actions cannot bypass authorization (Issue #1852).
+	if !p.isSenderAllowed(userID, chatID) {
+		slog.Debug(p.tag()+": card action from unauthorized user", "user", userID)
+		return nil, nil
 	}
 	if chatID == "" {
 		chatID = userID
@@ -1858,7 +1863,11 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		}
 	}
 
-	if !core.AllowList(p.allowFrom, userID) {
+	groupChatID := ""
+	if chatType == "group" {
+		groupChatID = chatID
+	}
+	if !p.isSenderAllowed(userID, groupChatID) {
 		slog.Debug(p.tag()+": message from unauthorized user", "user", userID)
 		// Announce the rejection only when the sender deliberately addressed
 		// the bot (p2p chat or explicit @mention). Group messages merely
