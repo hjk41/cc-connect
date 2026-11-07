@@ -130,7 +130,23 @@ jobs:
           go-version-file: go.mod
       - name: Install Windows test dependencies
         if: runner.os == 'Windows'
-        run: choco install sqlite --yes --no-progress
+        shell: pwsh
+        run: |
+          choco install sqlite --yes --no-progress
+          if (-not (Get-Command sqlite3 -ErrorAction SilentlyContinue)) {
+            # Chocolatey's community feed occasionally returns 503. Fall back
+            # to the official SQLite tools zip so the Cursor tests still run.
+            $page = Invoke-WebRequest -Uri 'https://www.sqlite.org/download.html' -UseBasicParsing
+            $match = [regex]::Match($page.Content, 'href="([^"]*sqlite-tools-win-x64-[^"]*\.zip)"')
+            if (-not $match.Success) { throw 'sqlite3 is unavailable and no SQLite tools zip was found' }
+            $zip = Join-Path $env:RUNNER_TEMP 'sqlite-tools.zip'
+            Invoke-WebRequest -Uri ('https://www.sqlite.org/' + $match.Groups[1].Value) -OutFile $zip -UseBasicParsing
+            $dir = Join-Path $env:RUNNER_TEMP 'sqlite-tools'
+            Expand-Archive -Path $zip -DestinationPath $dir -Force
+            $exe = Get-ChildItem -Path $dir -Recurse -Filter 'sqlite3.exe' | Select-Object -First 1
+            if (-not $exe) { throw 'sqlite3.exe not found in downloaded tools' }
+            $exe.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append
+          }
       - name: Download dependencies
         run: go mod download
       - name: Verify module checksums
