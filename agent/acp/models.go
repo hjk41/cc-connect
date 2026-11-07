@@ -26,7 +26,9 @@ func (a *Agent) SetModel(model string) {
 			sess.SetLiveModel(model)
 		}
 	}
-	slog.Info("acp: model changed", "model", model)
+	// Do not log the model value: CodeQL taints it through the generic
+	// core.ModelSwitcher path from provider config that also carries keys.
+	slog.Info("acp: model changed")
 }
 
 // GetModel returns the configured model. When nothing is configured it

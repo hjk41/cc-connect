@@ -453,7 +453,7 @@ func (s *acpSession) SetLiveModel(model string) bool {
 		"value":     model,
 	})
 	if err != nil {
-		slog.Warn("acp: session/set_config_option model failed", "error", err, "model", model)
+		slog.Warn("acp: session/set_config_option model failed", "error", err)
 		return false
 	}
 	var resp struct {
@@ -462,7 +462,9 @@ func (s *acpSession) SetLiveModel(model string) bool {
 	if json.Unmarshal(res, &resp) == nil && len(resp.ConfigOptions) > 0 {
 		s.absorbConfigOptions(resp.ConfigOptions)
 	}
-	slog.Info("acp: live model applied", "model", model, "session_id", sid)
+	// The model value is intentionally not logged; CodeQL taints it through
+	// the generic core.ModelSwitcher path from provider config.
+	slog.Info("acp: live model applied", "session_id", sid)
 	return true
 }
 
