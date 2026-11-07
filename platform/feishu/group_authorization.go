@@ -12,16 +12,17 @@ import (
 // context, never from action values or message content. The existing mention
 // and allow_chat filters still apply independently.
 func (p *Platform) isSenderAllowed(userID, groupChatID string) bool {
+	allowFrom, allowGroupMembers := p.AccessLists()
 	if userID == "" {
 		return false
 	}
-	if core.AllowList(p.allowFrom, userID) {
+	if core.AllowList(allowFrom, userID) {
 		return true
 	}
 	if groupChatID == "" {
 		return false
 	}
-	for _, chatID := range strings.Split(p.allowGroupMembers, ",") {
+	for _, chatID := range strings.Split(allowGroupMembers, ",") {
 		if strings.EqualFold(strings.TrimSpace(chatID), groupChatID) {
 			return true
 		}

@@ -403,6 +403,12 @@ type LocationAttachment struct {
 	ProximityAlertRadius int     // maximum distance for proximity alerts in meters (optional)
 }
 
+// Mention identifies a user mentioned in an incoming message.
+type Mention struct {
+	UserID string
+	Name   string
+}
+
 // Message represents a unified incoming message from any platform.
 type Message struct {
 	SessionKey   string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
@@ -413,6 +419,8 @@ type Message struct {
 	UserID       string
 	UserName     string
 	ChatName     string // human-readable chat/group name (optional)
+	ChatType     string // platform chat type, e.g. "group" or "p2p"
+	Mentions     []Mention
 	Content      string
 	Images       []ImageAttachment   // attached images (if any)
 	Files        []FileAttachment    // attached files (if any)
