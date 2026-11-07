@@ -3454,17 +3454,18 @@ func extractLineComment(line string) string {
 
 // ProjectSettingsUpdate carries optional field updates for SaveProjectSettings.
 type ProjectSettingsUpdate struct {
-	Language             *string
-	AdminFrom            *string
-	DisabledCommands     []string
-	WorkDir              *string
-	Mode                 *string
-	AgentType            *string
-	ShowContextIndicator *bool
-	ShowWorkdirIndicator *bool
-	ReplyFooter          *bool
-	InjectSender         *bool
-	PlatformAllowFrom    map[string]string
+	Language                  *string
+	AdminFrom                 *string
+	DisabledCommands          []string
+	WorkDir                   *string
+	Mode                      *string
+	AgentType                 *string
+	ShowContextIndicator      *bool
+	ShowWorkdirIndicator      *bool
+	ReplyFooter               *bool
+	InjectSender              *bool
+	PlatformAllowFrom         map[string]string
+	PlatformAllowGroupMembers map[string]string
 	// WorkspaceMode and WorkspaceBaseDir control the project-level
 	// multi-workspace feature (ProjectConfig.Mode/BaseDir), distinct from
 	// Mode above (which is the agent permission mode, e.g. yolo/plan).
@@ -3616,6 +3617,29 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 					proj.Platforms[j].Options = map[string]any{}
 				}
 				proj.Platforms[j].Options["allow_from"] = strings.TrimSpace(af)
+			}
+		}
+		if update.PlatformAllowGroupMembers != nil {
+			for j := range proj.Platforms {
+				typ := strings.TrimSpace(proj.Platforms[j].Type)
+				if typ == "" {
+					continue
+				}
+				var groups string
+				var found bool
+				for k, v := range update.PlatformAllowGroupMembers {
+					if strings.EqualFold(strings.TrimSpace(k), typ) {
+						groups, found = v, true
+						break
+					}
+				}
+				if !found {
+					continue
+				}
+				if proj.Platforms[j].Options == nil {
+					proj.Platforms[j].Options = map[string]any{}
+				}
+				proj.Platforms[j].Options["allow_group_members"] = strings.TrimSpace(groups)
 			}
 		}
 		return saveConfig(cfg)

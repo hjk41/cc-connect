@@ -2872,11 +2872,12 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	wd := "/tmp/patched"
 	mode := "yolo"
 	err := SaveProjectSettings("alpha", ProjectSettingsUpdate{
-		WorkDir:              &wd,
-		Mode:                 &mode,
-		ShowContextIndicator: &show,
-		ShowWorkdirIndicator: &hideWorkdir,
-		PlatformAllowFrom:    map[string]string{"telegram": "u1", "Feishu": "u2"},
+		WorkDir:                   &wd,
+		Mode:                      &mode,
+		ShowContextIndicator:      &show,
+		ShowWorkdirIndicator:      &hideWorkdir,
+		PlatformAllowFrom:         map[string]string{"telegram": "u1", "Feishu": "u2"},
+		PlatformAllowGroupMembers: map[string]string{"Feishu": "oc_team"},
 	})
 	if err != nil {
 		t.Fatalf("SaveProjectSettings: %v", err)
@@ -2901,6 +2902,9 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	}
 	if stringMapValue(proj.Platforms[1].Options, "allow_from") != "u2" {
 		t.Fatalf("feishu allow_from = %q, want u2", stringMapValue(proj.Platforms[1].Options, "allow_from"))
+	}
+	if stringMapValue(proj.Platforms[1].Options, "allow_group_members") != "oc_team" {
+		t.Fatalf("feishu allow_group_members = %q, want oc_team", stringMapValue(proj.Platforms[1].Options, "allow_group_members"))
 	}
 }
 

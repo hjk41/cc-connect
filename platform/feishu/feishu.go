@@ -127,6 +127,7 @@ type Platform struct {
 	reactionEmoji              string
 	ackEmoji                   string
 	doneEmoji                  string
+	authMu                     sync.RWMutex
 	allowFrom                  string
 	allowChat                  string
 	allowGroupMembers          string
@@ -1931,7 +1932,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
 	// correctness before spawning the goroutine.
-	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryCtx)
+	go p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, chatType, rctx, parentID, createTimeMs, groupHistoryCtx)
 
 	return nil
 }
@@ -1949,10 +1950,10 @@ func (p *Platform) replyUnauthorizedAccess(ctx context.Context, rctx replyContex
 // handler invocation. It runs in its own goroutine so that onMessage returns
 // quickly and does not block the SDK event loop.
 func (p *Platform) dispatchMessage(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64) {
-	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs, groupHistoryContext{})
+	p.dispatchMessageWithHistory(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, "", rctx, parentID, createTimeMs, groupHistoryContext{})
 }
 
-func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext) {
+func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, content string, mentions []*larkim.MentionEvent, messageID, sessionKey, userID, chatID, chatType string, rctx replyContext, parentID string, createTimeMs int64, groupHistoryCtx groupHistoryContext) {
 	if p.isMessageRecalled(messageID) {
 		slog.Debug(p.tag()+": recalled message ignored in async dispatch", "message_id", messageID)
 		return
@@ -2020,6 +2021,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 			SessionKey: sessionKey, Platform: p.platformName,
 			MessageID: messageID,
 			UserID:    userID, UserName: userName, ChatName: chatName,
+			ChatType: chatType, Mentions: p.coreMentions(mentions),
 			Content: text, ExtraContent: quoted.text, Images: quoted.images, Files: quotedFiles, ReplyCtx: rctx,
 			UserMessageTimeMs: createTimeMs,
 		})
@@ -6033,7 +6035,8 @@ func (p *Platform) onBotMenu(event *larkapplication.P2BotMenuV6) error {
 		return nil
 	}
 
-	if !core.AllowList(p.allowFrom, userID) {
+	allowFrom, _ := p.AccessLists()
+	if !core.AllowList(allowFrom, userID) {
 		slog.Debug(p.tag()+": menu event from unauthorized user", "user", userID, "event_key", eventKey)
 		return nil
 	}

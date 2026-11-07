@@ -950,6 +950,12 @@ func main() {
 		engine.SetModelSaveFunc(func(model string) error {
 			return config.SaveAgentModel(projName, model)
 		})
+		engine.SetPlatformAccessSaveFunc(func(platformName, allowFrom, allowGroupMembers string) error {
+			return config.SaveProjectSettings(projName, config.ProjectSettingsUpdate{
+				PlatformAllowFrom:         map[string]string{platformName: allowFrom},
+				PlatformAllowGroupMembers: map[string]string{platformName: allowGroupMembers},
+			})
+		})
 
 		// Wire config reload
 		capturedEngine := engine

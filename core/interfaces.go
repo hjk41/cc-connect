@@ -654,6 +654,14 @@ type WorkspaceAgentOptionSnapshotter interface {
 	WorkspaceAgentOptions() map[string]any
 }
 
+// AccessListUpdater is an optional Platform extension for changing the
+// platform's runtime user/group access grants without restarting the process.
+// Implementations must be safe for concurrent reads by message handlers.
+type AccessListUpdater interface {
+	AccessLists() (allowFrom, allowGroupMembers string)
+	SetAccessLists(allowFrom, allowGroupMembers string) error
+}
+
 // LiveModeSwitcher is an optional interface for running agent sessions that can
 // apply a mode change immediately without restarting the process.
 type LiveModeSwitcher interface {

@@ -391,6 +391,9 @@ type Engine struct {
 
 	displaySaveFunc  func(mode *string, thinkingMessages *bool, thinkingMaxLen, toolMaxLen *int, toolMessages *bool) error
 	configReloadFunc func() (*ConfigReloadResult, error)
+	// platformAccessSaveFunc persists runtime allow_from/allow_group_members
+	// changes. Nil means runtime-only updates are allowed.
+	platformAccessSaveFunc func(platformName, allowFrom, allowGroupMembers string) error
 
 	hooks              *HookManager
 	cronScheduler      *CronScheduler
@@ -1164,6 +1167,11 @@ func (e *Engine) SetDisplaySaveFunc(fn func(mode *string, thinkingMessages *bool
 	e.displaySaveFunc = fn
 }
 
+// SetPlatformAccessSaveFunc wires persistence for runtime access-list changes.
+func (e *Engine) SetPlatformAccessSaveFunc(fn func(platformName, allowFrom, allowGroupMembers string) error) {
+	e.platformAccessSaveFunc = fn
+}
+
 // ConfigReloadResult describes what was updated by a config reload.
 type ConfigReloadResult struct {
 	DisplayUpdated   bool
@@ -1325,6 +1333,12 @@ func isPrivilegedCommandInvocation(cmdID string, args []string) bool {
 		return matchSubCommand(sub, []string{
 			"add", "addexec", "list", "del", "delete", "rm", "remove", "enable", "disable", "mute", "unmute", "setup",
 		}) == "addexec"
+	case "config":
+		if len(args) < 2 || matchSubCommand(sub, []string{"get", "set", "reload"}) != "set" {
+			return false
+		}
+		key := strings.ToLower(args[1])
+		return key == "allow_from" || key == "allow_all_members"
 	default:
 		return false
 	}
@@ -16337,6 +16351,9 @@ func (e *Engine) cmdConfig(p Platform, msg *Message, args []string) {
 	items := e.configItems()
 	isZh := e.i18n.IsZhLike()
 	sub := matchSubCommand(strings.ToLower(args[0]), []string{"get", "set", "reload"})
+	if e.cmdConfigAccess(p, msg, args, sub) {
+		return
+	}
 
 	switch sub {
 	case "reload":
