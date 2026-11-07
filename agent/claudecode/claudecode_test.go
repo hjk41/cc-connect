@@ -1349,6 +1349,7 @@ func setupSessionForHistory(t *testing.T, sessionID, src string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // os.UserHomeDir prefers USERPROFILE on Windows.
 	workDir := t.TempDir()
 	dir := filepath.Join(home, ".claude", "projects", encodeClaudeProjectKey(workDir))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
