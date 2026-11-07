@@ -13,14 +13,14 @@ require (
 	github.com/go-telegram/bot v1.20.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.0
-	github.com/yuin/goldmark v1.8.2
-	github.com/larksuite/oapi-sdk-go/v3 v3.5.3
+	github.com/larksuite/oapi-sdk-go/v3 v3.12.2
 	github.com/line/line-bot-sdk-go/v8 v8.19.0
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/open-dingtalk/dingtalk-stream-sdk-go v0.9.1
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/slack-go/slack v0.16.0
 	github.com/stretchr/testify v1.11.1
+	github.com/yuin/goldmark v1.8.2
 	golang.org/x/crypto v0.50.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/api v0.272.0

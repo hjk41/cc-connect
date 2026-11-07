@@ -19,6 +19,9 @@ Beta since v1.5.0 stable — 16 merged PRs focused on Feishu/Weixin reliability,
 
 ## Unreleased
 
+### Fixed
+- **Pi**: Merge custom providers with the built-in model catalog, resolve ambiguous aliases using the default provider, and filter duplicate or empty model entries. Reasoning levels follow the selected model, and switching models clears unsupported thinking overrides. Context windows now use catalog values for catalog-only models, with custom definitions taking precedence (#1872).
+
 ### Added
 - **DeepSeek Harness (dsh)**: first-class agent (`type = "dsh"`) on the ACP profile. Sessions resume with `session/resume` and close with `session/close`. Models accept opaque option values, display names, and inner ids; reasoning effort maps `medium`/`xhigh`/`minimal` onto `off|low|high|max`. Permission mode is `DSH_PERMISSION_MODE` for a fresh session, and a resumed session is updated by appending permission facts before `session/resume`, so `/mode` applies on the next message of the same conversation. History, titles, and delete read the zstd JSONL log under `DSH_HOME`. `/usage` reports the DeepSeek balance. `/compact` is not advertised: the ACP profile has no slash-command channel and dsh compacts on its own. See `docs/dsh-parity.md`.
 - **Devin**: mode aliases (`normal` / `default` / `code` map to `accept-edits`), model listing via `devin models list` (`models_cmd` when `cmd` is a wrapper), model and reasoning-effort switching through ACP `configOptions` / `thought_level` (unknown values surface as a startup warning), context usage, session delete/history/titles, symlink-safe cwd, native image prompts, `AGENTS.md` memory paths, skill directories, and `/compact`.

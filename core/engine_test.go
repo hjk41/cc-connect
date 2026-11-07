@@ -8941,7 +8941,9 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 					// run via store.MarkRun after delivering the job's output.
 					// Wait for that write to finish; otherwise t.TempDir()'s
 					// RemoveAll cleanup can race the crons/jobs.json write and
-					// fail with "directory not empty" on Windows.
+					// fail with "directory not empty" on Windows. LastRun is
+					// set under the same store lock as the save, so observing
+					// it means the write has completed.
 					found, lastRunSet, _ := cronJobRunStatus(store, job.ID)
 					if !found {
 						t.Fatal("expected stored job")
@@ -17723,5 +17725,40 @@ func TestProcessInteractiveEvents_ProgressUpdateFailurePreservesFinalReply(t *te
 				t.Fatalf("final card payload = %#v, want completed", payload)
 			}
 		})
+	}
+}
+
+func TestCmdCurrent_UsesNativeSummaryForCurrentAgentSession(t *testing.T) {
+	nativeSessions := []AgentSessionInfo{
+		{ID: "agent-current", Summary: "Native generated title", MessageCount: 4, ModifiedAt: time.Now()},
+		{ID: "agent-other", Summary: "Other title", MessageCount: 2, ModifiedAt: time.Now()},
+	}
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &stubListAgent{sessions: nativeSessions}, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	session := e.sessions.GetOrCreateActive(msg.SessionKey)
+	session.Name = "latest user message"
+	session.SetAgentSessionID("agent-current", "codex")
+	session.AddHistory("user", "latest user message")
+
+	e.cmdCurrent(p, msg)
+
+	if len(p.sent) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(p.sent))
+	}
+	if !strings.Contains(p.sent[0], "Name: Native generated title") {
+		t.Fatalf("/current = %q, want native summary display name", p.sent[0])
+	}
+	if strings.Contains(p.sent[0], "Name: latest user message") {
+		t.Fatalf("/current = %q, should not use local Session.Name when native summary exists", p.sent[0])
+	}
+
+	p.sent = nil
+	e.cmdList(p, msg, nil)
+	if len(p.sent) != 1 {
+		t.Fatalf("list sent messages = %d, want 1", len(p.sent))
+	}
+	if got := strings.Count(p.sent[0], "msgs"); got != len(nativeSessions) {
+		t.Fatalf("/list item count = %d, want %d\n%s", got, len(nativeSessions), p.sent[0])
 	}
 }

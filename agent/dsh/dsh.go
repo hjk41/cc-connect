@@ -80,6 +80,13 @@ func (a *Agent) CLIDisplayName() string { return "DeepSeek Harness" }
 // which dsh loads as workspace instructions.
 func (a *Agent) HasSystemPromptSupport() bool { return false }
 
+// CompressCommand is empty because dsh's ACP profile has no slash-command
+// channel; the chat UI's dsh-command-compact is not reachable as a prompt.
+// dsh compacts context on its own. The embedded ACP agent now implements
+// core.ContextCompressor, so shadow it with an empty command to keep the
+// engine from advertising /compress for dsh (see docs/dsh-parity.md).
+func (a *Agent) CompressCommand() string { return "" }
+
 // SetPlatformPrompt prefixes the first prompt of a newly created session
 // with platform formatting instructions. Resumed sessions are unchanged.
 func (a *Agent) SetPlatformPrompt(prompt string) {

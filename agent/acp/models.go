@@ -8,14 +8,25 @@ import (
 	"github.com/chenhg5/cc-connect/core"
 )
 
-// SetModel stores the model id applied to future sessions.
-// The running session is left unchanged; ModelSwitcher is next-session.
+// SetModel stores the model id applied to future sessions and, when the
+// agent advertises the model config option, applies it to the running
+// session as well. modelOverride makes the choice outlive a session
+// restart: session/load would otherwise report the model persisted at
+// creation time and revert the user's switch.
 func (a *Agent) SetModel(model string) {
 	model = strings.TrimSpace(model)
 	a.mu.Lock()
 	a.model = model
 	a.mu.Unlock()
-	slog.Info("acp: model changed for future sessions", "model", model)
+	a.modelsMu.Lock()
+	a.modelOverride = model
+	a.modelsMu.Unlock()
+	if model != "" {
+		if sess := a.activeSession.Load(); sess != nil {
+			sess.SetLiveModel(model)
+		}
+	}
+	slog.Info("acp: model changed", "model", model)
 }
 
 // GetModel returns the configured model. When nothing is configured it

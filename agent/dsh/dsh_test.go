@@ -60,8 +60,8 @@ func TestNewDefaultsAndModeEnv(t *testing.T) {
 	if agent.HasSystemPromptSupport() {
 		t.Fatal("dsh must not advertise a system-prompt channel")
 	}
-	if _, ok := any(agent).(core.ContextCompressor); ok {
-		t.Fatal("dsh must not advertise ContextCompressor")
+	if compressor, ok := any(agent).(core.ContextCompressor); ok && compressor.CompressCommand() != "" {
+		t.Fatalf("dsh must not advertise a compact command, got %q", compressor.CompressCommand())
 	}
 	if agent.GetModel() != "deepseek-flash" {
 		t.Fatalf("model = %q", agent.GetModel())
