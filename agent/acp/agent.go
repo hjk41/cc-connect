@@ -133,6 +133,18 @@ type Agent struct {
 	modesCurrent string
 	modeDesc     map[string]string
 
+	// modelOverride is set only by SetModel (a user-initiated /model
+	// switch). It must survive session restarts: the engine closes the
+	// session on switch, and the next handshake's session/load would
+	// otherwise report the model persisted at creation time and silently
+	// revert the user's choice.
+	modelOverride string
+
+	// activeSession is the most recently started session. SetModel uses
+	// it to apply a /model switch live when the agent advertises the
+	// model config option.
+	activeSession atomic.Pointer[acpSession]
+
 	mu sync.RWMutex
 }
 
@@ -145,9 +157,11 @@ type sessionCallbacks interface {
 	reportListSupported(supported bool)
 	reportDeleteSupported(supported bool)
 	reportModelOptions(current string, options []core.ModelOption)
+	reportModels(current string, models []core.ModelOption)
 	reportThoughtLevel(current string, values []string)
 	reportModeDescriptions(byID map[string]string)
 	reportSessionTitle(sessionID, title string)
+	reportActiveSession(s *acpSession)
 }
 
 // Ensure *Agent satisfies the optional core interfaces Phase A adds,
@@ -448,6 +462,12 @@ func (a *Agent) Stop() error { return nil }
 
 var _ core.HistoryProvider = (*Agent)(nil)
 
+// CompressCommand implements core.ContextCompressor. ACP has no dedicated
+// compaction RPC; servers that support compaction (e.g. kimi acp) intercept
+// "/compact" as a builtin slash command inside session/prompt. Servers
+// without it answer with an "unknown command" notice, which is harmless.
+func (a *Agent) CompressCommand() string { return "/compact" }
+
 // -- AgentDoctorInfo --
 
 func (a *Agent) CLIBinaryName() string {
@@ -577,7 +597,9 @@ func (a *Agent) reportModelOptions(current string, options []core.ModelOption) {
 	current = strings.TrimSpace(current)
 	a.modelsMu.Lock()
 	defer a.modelsMu.Unlock()
-	if current != "" {
+	// A server-reported current value (e.g. restored by session/load after
+	// a restart) must not clobber an explicit /model override.
+	if current != "" && a.modelOverride == "" {
 		a.lastReportedModel = current
 	}
 	if len(options) == 0 {
@@ -696,3 +718,15 @@ func (a *Agent) GetAllowedTools() []string {
 }
 
 var _ core.ToolAuthorizer = (*Agent)(nil)
+
+// reportModels records the model list and current model advertised by a
+// session. It mirrors reportModelOptions so sessions may use either name.
+func (a *Agent) reportModels(current string, models []core.ModelOption) {
+	a.reportModelOptions(current, models)
+}
+
+func (a *Agent) reportActiveSession(s *acpSession) {
+	a.activeSession.Store(s)
+}
+
+var _ core.ModelSwitcher = (*Agent)(nil)

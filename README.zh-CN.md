@@ -1,6 +1,6 @@
 # CC-Connect
 
-[English](README.md) | [中文](README.zh-CN.md)
+[English](README.md) | [中文](README.zh-CN.md) | [Русский](README.ru.md)
 
 [![CI](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/hjk41/cc-connect/actions/workflows/codeql.yml)

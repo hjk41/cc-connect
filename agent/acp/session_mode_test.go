@@ -307,6 +307,9 @@ func (f *fakeCallbacks) reportModelOptions(current string, options []core.ModelO
 	f.modelOptions = append([]core.ModelOption(nil), options...)
 	f.mu.Unlock()
 }
+func (f *fakeCallbacks) reportModels(current string, models []core.ModelOption) {
+	f.reportModelOptions(current, models)
+}
 func (f *fakeCallbacks) reportThoughtLevel(string, []string) {}
 
 func (f *fakeCallbacks) reportModeDescriptions(map[string]string) {}
@@ -319,6 +322,7 @@ func (f *fakeCallbacks) reportSessionTitle(sessionID, title string) {
 	f.titles[sessionID] = title
 	f.mu.Unlock()
 }
+func (f *fakeCallbacks) reportActiveSession(s *acpSession) {}
 func (f *fakeCallbacks) lastModes() (acpModesBlock, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

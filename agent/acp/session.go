@@ -140,6 +140,10 @@ type acpSession struct {
 type permState struct {
 	RPCID   json.RawMessage
 	Options []permissionOption
+	// Elicitation is non-nil when this pending request arrived via
+	// elicitation/create instead of session/request_permission; it carries
+	// what RespondPermission needs to build a CreateElicitationResponse.
+	Elicitation *elicitationState
 }
 
 // acpSessionConfig bundles the inputs newACPSession needs. It's a
@@ -244,6 +248,10 @@ func newACPSession(ctx context.Context, cfg acpSessionConfig) (*acpSession, erro
 	// through StartupWarning and do not fail the session.
 	s.applyStartupPreferences(cfg.initialMode, cfg.initialModel, cfg.initialEffort)
 
+	if s.callbacks != nil {
+		s.callbacks.reportActiveSession(s)
+	}
+
 	return s, nil
 }
 
@@ -270,6 +278,13 @@ func (s *acpSession) rpcInitialize() (acpInitializeResult, error) {
 				"writeTextFile": false,
 			},
 			"terminal": false,
+			// Advertise form-mode elicitation so agents with a structured
+			// question bridge (kimi acp routes AskUserQuestion through
+			// elicitation/create when this is set) use it instead of
+			// degrading to a single-question request_permission prompt.
+			"elicitation": map[string]any{
+				"form": map[string]any{},
+			},
 		},
 		"clientInfo": map[string]any{
 			"name":    "cc-connect",
@@ -421,6 +436,36 @@ func (s *acpSession) absorbModes(block *acpModesBlock) {
 	if s.callbacks != nil {
 		s.callbacks.reportModes(*block)
 	}
+}
+
+// SetLiveModel changes the model of the active session via `session/set_config_option`.
+func (s *acpSession) SetLiveModel(model string) bool {
+	if !s.alive.Load() {
+		return false
+	}
+	sid := s.currentACPSessionID()
+	if sid == "" {
+		return false
+	}
+	res, err := s.tr.call(s.ctx, "session/set_config_option", map[string]any{
+		"sessionId": sid,
+		"configId":  "model",
+		"value":     model,
+	})
+	if err != nil {
+		slog.Warn("acp: session/set_config_option model failed", "error", err)
+		return false
+	}
+	var resp struct {
+		ConfigOptions []acpConfigOption `json:"configOptions"`
+	}
+	if json.Unmarshal(res, &resp) == nil && len(resp.ConfigOptions) > 0 {
+		s.absorbConfigOptions(resp.ConfigOptions)
+	}
+	// The model value is intentionally not logged; CodeQL taints it through
+	// the generic core.ModelSwitcher path from provider config.
+	slog.Info("acp: live model applied", "session_id", sid)
+	return true
 }
 
 func (s *acpSession) setACPSessionID(id string) {
@@ -702,6 +747,8 @@ func (s *acpSession) onServerRequest(method string, id json.RawMessage, params j
 	switch method {
 	case "session/request_permission":
 		s.handlePermissionRequest(id, params)
+	case "elicitation/create":
+		s.handleElicitationRequest(id, params)
 	case "cursor/ask_question":
 		s.handleCursorAskQuestion(id, params)
 	case "cursor/create_plan":
@@ -833,6 +880,42 @@ func (s *acpSession) permissionDisplay(id, title, kind string, raw json.RawMessa
 		toolInput = id
 	}
 	return toolName, toolInput
+}
+
+// handleElicitationRequest bridges ACP elicitation/create (form mode) into
+// the engine's AskUserQuestion wizard: the form schema becomes
+// []core.UserQuestion and the request id is cached so RespondPermission can
+// translate the collected answers back into a CreateElicitationResponse.
+func (s *acpSession) handleElicitationRequest(id json.RawMessage, params json.RawMessage) {
+	st, err := parseElicitationCreateParams(params)
+	if err != nil {
+		slog.Warn("acp: elicitation/create rejected", "error", err)
+		// A JSON-RPC error lets agents like kimi acp fall back to the
+		// request_permission question bridge.
+		_ = s.tr.respondError(id, -32602, err.Error())
+		return
+	}
+	reqKey := jsonIDKey(id)
+	s.permMu.Lock()
+	s.permByID[reqKey] = permState{RPCID: id, Elicitation: st}
+	s.permMu.Unlock()
+
+	questions := make([]core.UserQuestion, 0, len(st.Questions))
+	for _, q := range st.Questions {
+		questions = append(questions, q.Question)
+	}
+	var rawParams map[string]any
+	_ = json.Unmarshal(params, &rawParams)
+	slog.Info("acp: elicitation request", "request_id", reqKey, "questions", len(questions))
+	s.emit(core.Event{
+		Type:         core.EventPermissionRequest,
+		RequestID:    reqKey,
+		ToolName:     "AskUserQuestion",
+		ToolInput:    questions[0].Question,
+		ToolInputRaw: rawParams,
+		Questions:    questions,
+		SessionID:    s.currentACPSessionID(),
+	})
 }
 
 func (s *acpSession) emit(ev core.Event) {
@@ -994,6 +1077,12 @@ func (s *acpSession) RespondPermission(requestID string, result core.PermissionR
 	s.permMu.Unlock()
 	if !ok {
 		return fmt.Errorf("acp: unknown permission request %q", requestID)
+	}
+
+	if st.Elicitation != nil {
+		res := buildElicitationResponse(st.Elicitation, result)
+		slog.Debug("acp: elicitation response", "request_id", requestID, "action", res["action"])
+		return s.tr.respondSuccess(st.RPCID, res)
 	}
 
 	allow := strings.EqualFold(result.Behavior, "allow")

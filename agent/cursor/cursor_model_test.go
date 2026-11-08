@@ -78,19 +78,25 @@ func TestFetchModelsFromAgentCLI_FailsGracefully(t *testing.T) {
 	}
 }
 
-func TestAvailableModels_Fallback(t *testing.T) {
-	// When agent models fails, should fall back to hardcoded list
+func TestAvailableModels_DoesNotInventFallbackModels(t *testing.T) {
 	ctx, cancel := shortTestContext(t)
 	defer cancel()
 	a := &Agent{cmd: "nonexistent-cmd-that-will-fail"}
 	models := a.AvailableModels(ctx)
-	fallback := cursorFallbackModels()
-	if len(models) != len(fallback) {
-		t.Fatalf("fallback models length = %d, want %d", len(models), len(fallback))
+	// This fork always keeps Cursor's built-in "auto" choice available so the
+	// /model card still has a usable entry when CLI discovery fails. It must
+	// not guess concrete model ids the way the old fallback list did.
+	if len(models) != 1 || models[0].Name != "auto" {
+		t.Fatalf("a failed CLI lookup must only offer the built-in auto model: %v", models)
 	}
-	for i := range models {
-		if models[i].Name != fallback[i].Name {
-			t.Errorf("models[%d].Name = %q, want %q", i, models[i].Name, fallback[i].Name)
+	for _, stale := range []string{
+		"claude-sonnet-4-20250514", "claude-opus-4-20250514", "gpt-4o",
+		"gemini-2.5-pro", "cursor-small",
+	} {
+		for _, m := range models {
+			if m.Name == stale {
+				t.Fatalf("failed CLI lookup invented %q: %v", stale, models)
+			}
 		}
 	}
 }

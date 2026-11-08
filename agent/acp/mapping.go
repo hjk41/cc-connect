@@ -44,7 +44,8 @@ func mapSessionUpdate(sessionID string, params json.RawMessage) []core.Event {
 		// History replay during session/load — suppress to avoid echoing user input.
 		return nil
 	case "available_commands_update", "config_option_update", "session_info_update", "usage_update", "current_mode_update":
-		// Consumed by the session (when useful) and never shown as chat text.
+		// Consumed by the session (usage_update feeds GetContextUsage) and
+		// never shown as chat text.
 		return nil
 	default:
 		// Vendor methods such as "_cognition.ai/compaction" must not leak.
