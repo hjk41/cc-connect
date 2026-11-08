@@ -783,7 +783,7 @@ func TestLark_ThreadIsolationUsesRootSessionKey(t *testing.T) {
 }
 
 func TestLark_GroupReplyAllWithThreadIsolationUsesRootSessionKeyWithoutMention(t *testing.T) {
-	p, err := newPlatform("lark", lark.LarkBaseUrl, map[string]any{
+	p, err := newPlatform("lark", stubOpenAPIDomain(t), map[string]any{
 		"app_id": "cli_xxx", "app_secret": "secret", "enable_feishu_card": true,
 		"group_reply_all": true, "thread_isolation": true,
 	})
