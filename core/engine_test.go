@@ -8941,9 +8941,9 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 					// run via store.MarkRun after delivering the job's output.
 					// Wait for that write to finish; otherwise t.TempDir()'s
 					// RemoveAll cleanup can race the crons/jobs.json write and
-					// fail with "directory not empty" on Windows. LastRun is
-					// set under the same store lock as the save, so observing
-					// it means the write has completed.
+					// fail with "directory not empty" on Windows. cronJobRunStatus
+					// reads LastRun under the same store lock as the save, so
+					// observing it means the write has completed.
 					found, lastRunSet, _ := cronJobRunStatus(store, job.ID)
 					if !found {
 						t.Fatal("expected stored job")
