@@ -9,16 +9,14 @@ import (
 	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+	"github.com/chenhg5/cc-connect/internal/testutil"
 )
 
 func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 	dir := t.TempDir()
 	instructions := filepath.Join(dir, "AGENTS.md")
-	cli := filepath.Join(dir, "cursor-agent")
 	script := "#!/bin/sh\nfor arg do printf '%s\\n' \"$arg\"; done > \"$CURSOR_TEST_ARGS\"\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"ok\",\"session_id\":\"cursor-session\"}'\n"
-	if err := os.WriteFile(cli, []byte(script), 0700); err != nil {
-		t.Fatal(err)
-	}
+	cli := testutil.Shell(t, filepath.Join(dir, "cursor-agent"), script)
 	argsFile := filepath.Join(dir, "args")
 	a, err := New(map[string]any{
 		"cmd": cli, "work_dir": dir, "model": "fixture-alpha", "mode": "yolo",
@@ -80,10 +78,7 @@ func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 
 func TestMissingInstructionsFileRefusesTurn(t *testing.T) {
 	dir := t.TempDir()
-	cli := filepath.Join(dir, "cursor-agent")
-	if err := os.WriteFile(cli, []byte("#!/bin/sh\nexit 0\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	cli := testutil.Shell(t, filepath.Join(dir, "cursor-agent"), "#!/bin/sh\nexit 0\n")
 	a, err := New(map[string]any{
 		"cmd": cli, "work_dir": dir,
 		"instructions_file": filepath.Join(dir, "missing"),
