@@ -1,6 +1,9 @@
 package core
 
 import (
+	"context"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -30,9 +33,21 @@ func TestCronExprToHuman_TimezonePrefix(t *testing.T) {
 // host. Both the card and the plain-text list must format in the schedule's
 // own zone and say which zone that is.
 func TestCronDisplay_UsesScheduleTimezone(t *testing.T) {
-	prev := time.Local
+	// time.Local is read by the runtime, logging and DNS goroutines. Changing it
+	// in the shared test process races with work left by earlier tests, even
+	// when this test itself is not parallel. Isolate the host-zone simulation.
+	const childEnv = "CC_CONNECT_CRON_DISPLAY_CHILD"
+	if os.Getenv(childEnv) != "1" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCronDisplay_UsesScheduleTimezone$", "-test.count=1")
+		cmd.Env = append(os.Environ(), childEnv+"=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("isolated timezone test: %v\n%s", err, out)
+		}
+		return
+	}
 	time.Local = time.FixedZone("UTC-4", -4*3600)
-	defer func() { time.Local = prev }()
 
 	store, err := NewCronStore(t.TempDir())
 	if err != nil {
