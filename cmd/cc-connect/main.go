@@ -956,6 +956,11 @@ func main() {
 				PlatformAllowGroupMembers: map[string]string{platformName: allowGroupMembers},
 			})
 		})
+		engine.SetPlatformReplyAllChatsSaveFunc(func(platformName, chatIDs string) error {
+			return config.SaveProjectSettings(projName, config.ProjectSettingsUpdate{
+				PlatformReplyAllChats: map[string]string{platformName: chatIDs},
+			})
+		})
 
 		// Wire config reload
 		capturedEngine := engine

@@ -177,6 +177,23 @@ app_secret = "QhkMpxxxxxxxxxxxxxxxxxxxx"
 
 ---
 
+### 4.4 按群设置免 @ 回复
+
+保持 `group_reply_all = false`，用 `reply_all_chats = "oc_group1,oc_group2"` 指定免 @ 的群。名单外的群仍需要 @，用户及群授权规则继续生效。应用需要上文的 `im:message.group_msg` 权限。
+
+配置了 `admin_from` 的管理员可以在群内即时修改，无需重启：
+
+```text
+/config set reply_all_chats +$this
+/config set reply_all_chats -$this
+/config get reply_all_chats
+/config set reply_all_chats none
+```
+
+`+$this` 添加当前群，`-$this` 移除当前群，`none` 清空列表。也可将 `$this` 换成具体的 `oc_...` 群 ID，在私聊中管理其他群；不支持 `*`。不带 `+`/`-` 的群 ID 会替换整个列表。命令会同时保存配置，重启后保留；保存失败会恢复原运行设置。`group_reply_all = true` 仍表示全部获准群免 @，优先于此列表。
+
+直接发送 `/config`，或从 `/help` 的系统菜单进入 `/config`，可查看当前显示设置、`allow_from`、`allow_all_members` 和 `reply_all_chats` 的实时值及修改示例。平台名单仅管理员可修改，修改立即生效；群成员授权和免 @ 回复是独立设置。此菜单列出命令支持的运行时配置，其他配置仍需查看 `config.toml`。
+
 ## 第五步：配置事件与回调订阅（长连接模式）
 
 ### 5.1 进入事件与回调页面

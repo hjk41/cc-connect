@@ -115,6 +115,9 @@ func TestConfigAccessKeysRequireAdmin(t *testing.T) {
 		{[]string{"set", "allow_from", "ou_x"}, true},
 		{[]string{"se", "allow_from", "ou_x"}, true},
 		{[]string{"set", "allow_all_members", "$this"}, true},
+		{[]string{"set", "reply_all_chats", "+$this"}, true},
+		{[]string{"se", "reply_all_chats", "none"}, true},
+		{[]string{"get", "reply_all_chats"}, false},
 		{[]string{"set", "mode", "compact"}, false},
 		{[]string{"get", "allow_from"}, false},
 	} {

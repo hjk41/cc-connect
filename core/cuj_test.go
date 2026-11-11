@@ -152,6 +152,114 @@ func TestCUJ_A9_PsAndBtwSupplementRunningTask(t *testing.T) {
 // agent "replies" for each user prompt, without bringing up a real LLM.
 // ---------------------------------------------------------------------------
 
+func TestCUJ_A10_ReplyAllChatsAdminControls(t *testing.T) {
+	t.Run("HelpMenuReflectsLiveSettings", testConfigHelpJourney)
+	p := &replyAllTestPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+	e := NewEngine("test", &cujAgent{}, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
+	e.SetAdminFrom("owner")
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	send := func(user, content string) string {
+		t.Helper()
+		before := len(p.getSent())
+		e.ReceiveMessage(p, &Message{
+			SessionKey: "test:oc_team:topic:root:" + user, Platform: "test", UserID: user,
+			ChatType: "group", ChannelID: "oc_team", ChannelKey: "oc_team:topic:root",
+			Content: content, ReplyCtx: "ctx", MessageID: fmt.Sprintf("cmd-%d", before),
+		})
+		sent := p.getSent()
+		if len(sent) <= before {
+			t.Fatalf("no visible reply to %q", content)
+		}
+		return sent[len(sent)-1]
+	}
+	if got := send("member", "/config set reply_all_chats +$this"); !strings.Contains(got, "admin_from") {
+		t.Fatalf("non-admin was not visibly rejected: %q", got)
+	}
+	if got := send("owner", "/config get reply_all_chats"); !strings.Contains(got, "none") {
+		t.Fatalf("denied change took effect: %q", got)
+	}
+	if got := send("owner", "/config set reply_all_chats +$this"); !strings.Contains(got, "`oc_team`") {
+		t.Fatalf("current group was not resolved: %q", got)
+	}
+	if got := send("member", "/config get reply_all_chats"); !strings.Contains(got, "`oc_team`") {
+		t.Fatalf("current setting not visible: %q", got)
+	}
+	if got := send("owner", "/config set reply_all_chats -$this"); !strings.Contains(got, "none") {
+		t.Fatalf("group removal failed: %q", got)
+	}
+	if got := send("owner", "/config get reply_all_chats"); !strings.Contains(got, "none") {
+		t.Fatalf("removed group still present: %q", got)
+	}
+}
+
+// Open help, follow its buttons, change a group setting, and reopen it. The
+// platform renders both replies and in-place card updates onto its text surface.
+func testConfigHelpJourney(t *testing.T) {
+	p := &configMenuCardPlatform{
+		stubCardPlatform: stubCardPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}},
+		configMenuState:  configMenuState{users: "owner"},
+	}
+	e := NewEngine("test", &cujAgent{}, []Platform{p}, filepath.Join(t.TempDir(), "sessions.json"), LangChinese)
+	e.SetAdminFrom("owner")
+	e.onPlatformReady(p)
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	key := "test:oc_team:owner"
+	send := func(content string) {
+		t.Helper()
+		e.ReceiveMessage(p, &Message{SessionKey: key, Platform: "test", UserID: "owner", ChatType: "group", ChannelID: "oc_team", Content: content, ReplyCtx: "ctx"})
+	}
+	assertVisible := func(wants ...string) {
+		t.Helper()
+		sent := p.getSent()
+		if len(sent) == 0 {
+			t.Fatal("no visible platform response")
+		}
+		for _, want := range wants {
+			if !strings.Contains(sent[len(sent)-1], want) {
+				t.Fatalf("response omitted %q: %s", want, sent[len(sent)-1])
+			}
+		}
+	}
+	var card *Card
+	click := func(action string) {
+		t.Helper()
+		if _, ok := findCardAction(card, action); !ok {
+			t.Fatalf("menu has no button for %s", action)
+		}
+		card = p.navigation(action, key)
+		if card == nil {
+			t.Fatalf("button %s returned no card", action)
+		}
+		if err := p.ReplyCard(context.Background(), "ctx", card); err != nil {
+			t.Fatal(err)
+		}
+	}
+	send("/help")
+	card = p.repliedCards[len(p.repliedCards)-1]
+	click("nav:/help system")
+	assertVisible("/config", "/whoami", "/web")
+	click("nav:/config")
+	assertVisible("allow_from", "allow_all_members", "reply_all_chats", "+$this", "-$this", "管理员")
+	send("/config get reply_all_chats")
+	assertVisible("none")
+	send("/config set reply_all_chats +$this")
+	assertVisible("oc_team")
+	click("nav:/help")
+	click("nav:/help system")
+	click("nav:/config")
+	assertVisible("`reply_all_chats` = `oc_team`")
+	send("/config")
+	assertVisible("`reply_all_chats` = `oc_team`")
+}
+
 // cujAgent is a controllable Agent that returns a configurable AgentSession
 // per StartSession call. Tests can mutate cujAgentSession.reply between
 // turns to simulate different agent responses.

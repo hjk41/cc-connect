@@ -662,6 +662,14 @@ type AccessListUpdater interface {
 	SetAccessLists(allowFrom, allowGroupMembers string) error
 }
 
+// ReplyAllChatsUpdater optionally supports runtime changes to the explicit
+// chats where messages need no mention. This changes triggering, not access.
+// Implementations must support concurrent message handlers and configuration.
+type ReplyAllChatsUpdater interface {
+	ReplyAllChats() (chatIDs string, allGroups bool)
+	SetReplyAllChats(chatIDs string) error
+}
+
 // LiveModeSwitcher is an optional interface for running agent sessions that can
 // apply a mode change immediately without restarting the process.
 type LiveModeSwitcher interface {

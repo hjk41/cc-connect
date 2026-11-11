@@ -150,6 +150,7 @@ type Platform struct {
 	allowGroupMembers          string
 	groupOnly                  bool
 	groupReplyAll              bool
+	replyAllChats              string // protected by authMu
 	respondToAtEveryoneAndHere bool
 	shareSessionInChannel      bool
 	threadIsolation            bool
@@ -563,6 +564,15 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		resourceMaxBytes:           defaultResourceMaxBytes,
 		mermaidRenderer:            mermaidRenderer,
 		mermaidTimeout:             mermaidTimeout,
+	}
+	if raw, exists := opts["reply_all_chats"]; exists {
+		chats, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s: reply_all_chats must be a comma-separated string", name)
+		}
+		if err := base.SetReplyAllChats(chats); err != nil {
+			return nil, err
+		}
 	}
 	if renderMermaid {
 		settings := fmt.Sprintf("renderer=%s\x00timeout=%s\x00format=png-v1", mermaidRenderer, mermaidTimeout)
@@ -1337,11 +1347,16 @@ func (p *Platform) prepareReceiptAcknowledgement(msg *core.Message) {
 // session scope. In Feishu topic mode the session key contains the root message
 // ID, while the legacy chat-level binding remains the default for new topics.
 func (p *Platform) populateWorkspaceChannelKeys(msg *core.Message) {
-	if msg == nil || msg.ChannelKey != "" {
+	if msg == nil {
 		return
 	}
 	rctx, ok := msg.ReplyCtx.(replyContext)
 	if !ok || rctx.chatID == "" {
+		return
+	}
+	// Group-scoped commands must target the chat, not a topic workspace key.
+	msg.ChannelID = rctx.chatID
+	if msg.ChannelKey != "" {
 		return
 	}
 	msg.ChannelKey = rctx.chatID
@@ -1815,6 +1830,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		chatType = *msg.ChatType
 	}
 	mentionCount := len(msg.Mentions)
+	replyAll := p.repliesToAllInChat(chatID)
 	slog.Debug(p.tag()+": inbound message",
 		"message_id", messageID,
 		"chat_id", chatID,
@@ -1824,6 +1840,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 		"parent_id", stringValue(msg.ParentId),
 		"mentions", mentionCount,
 		"group_reply_all", p.groupReplyAll,
+		"reply_all_in_chat", replyAll,
 		"thread_isolation", p.threadIsolation,
 	)
 
@@ -1840,7 +1857,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// existing mention filter and before allow_from: the chat controls whether
 	// cc-connect may observe the conversation, while allow_from controls who may
 	// trigger an agent turn.
-	if p.groupChatHistoryShare && chatType == "group" && !p.groupReplyAll && botOpenID != "" &&
+	if p.groupChatHistoryShare && chatType == "group" && !replyAll && botOpenID != "" &&
 		!botMentioned && !atEveryone && isGroupHistoryMessageType(msgType) {
 		if !core.AllowList(p.allowChat, chatID) {
 			slog.Debug(p.tag()+": group history ignored for unauthorized chat", "chat_id", chatID)
@@ -1859,7 +1876,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// rest of the process lifetime. We now consult both flags: when
 	// the filter is degraded we fail closed (drop the message) and
 	// emit a periodic warning, instead of failing open.
-	if chatType == "group" && !p.groupReplyAll && filterActive {
+	if chatType == "group" && !replyAll && filterActive {
 		if !botMentioned {
 			switch {
 			// Feishu @all sends {"text":"@_all"} with 0 mentions.
@@ -1932,7 +1949,7 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 
 	rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
 	var groupHistoryCtx groupHistoryContext
-	if p.groupChatHistoryShare && chatType == "group" && !p.groupReplyAll && botOpenID != "" && (botMentioned || atEveryone) {
+	if p.groupChatHistoryShare && chatType == "group" && !replyAll && botOpenID != "" && (botMentioned || atEveryone) {
 		scope := p.groupHistoryScope(msg, chatID)
 		if p.isGroupHistoryNewCommand(msgType, content, mentions) {
 			p.resetGroupHistory(scope)

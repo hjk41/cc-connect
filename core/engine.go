@@ -393,7 +393,9 @@ type Engine struct {
 	configReloadFunc func() (*ConfigReloadResult, error)
 	// platformAccessSaveFunc persists runtime allow_from/allow_group_members
 	// changes. Nil means runtime-only updates are allowed.
-	platformAccessSaveFunc func(platformName, allowFrom, allowGroupMembers string) error
+	platformAccessSaveFunc        func(platformName, allowFrom, allowGroupMembers string) error
+	platformReplyAllChatsSaveFunc func(platformName, chatIDs string) error
+	replyAllChatsConfigMu         sync.Mutex
 
 	hooks              *HookManager
 	cronScheduler      *CronScheduler
@@ -1172,6 +1174,11 @@ func (e *Engine) SetPlatformAccessSaveFunc(fn func(platformName, allowFrom, allo
 	e.platformAccessSaveFunc = fn
 }
 
+// SetPlatformReplyAllChatsSaveFunc wires persistence for mention-free chats.
+func (e *Engine) SetPlatformReplyAllChatsSaveFunc(fn func(platformName, chatIDs string) error) {
+	e.platformReplyAllChatsSaveFunc = fn
+}
+
 // ConfigReloadResult describes what was updated by a config reload.
 type ConfigReloadResult struct {
 	DisplayUpdated   bool
@@ -1338,7 +1345,7 @@ func isPrivilegedCommandInvocation(cmdID string, args []string) bool {
 			return false
 		}
 		key := strings.ToLower(args[1])
-		return key == "allow_from" || key == "allow_all_members"
+		return key == "allow_from" || key == "allow_all_members" || key == "reply_all_chats"
 	default:
 		return false
 	}
@@ -10328,6 +10335,7 @@ func helpCardGroups() []helpCardGroup {
 			items: []helpCardItem{
 				{command: "/shell", action: "cmd:/shell"},
 				{command: "/show", action: "cmd:/show"},
+				{command: "/diff", action: "cmd:/diff"},
 				{command: "/cron", action: "nav:/cron"},
 				{command: "/timer", action: "nav:/timer"},
 				{command: "/heartbeat", action: "nav:/heartbeat"},
@@ -10347,6 +10355,8 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/doctor", action: "nav:/doctor"},
 				{command: "/usage", action: "cmd:/usage"},
 				{command: "/config", action: "nav:/config"},
+				{command: "/whoami", action: "nav:/whoami"},
+				{command: "/web", action: "cmd:/web"},
 				{command: "/bind", action: "cmd:/bind"},
 				{command: "/workspace", action: "cmd:/workspace"},
 				{command: "/dir", action: "nav:/dir"},
@@ -13275,7 +13285,14 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/alias":
 		return e.renderAliasCard()
 	case "/config":
-		return e.renderConfigCard()
+		var platform Platform
+		for _, p := range e.platforms {
+			if p.Name() == extractPlatformName(sessionKey) {
+				platform = p
+				break
+			}
+		}
+		return e.renderConfigCard(platform)
 	case "/skills":
 		return e.skillsCardForSession(sessionKey)
 	case "/doctor":
@@ -14990,19 +15007,11 @@ func (e *Engine) renderAliasCard() *Card {
 		Build()
 }
 
-func (e *Engine) renderConfigCard() *Card {
-	items := e.configItems()
-	isZh := e.i18n.IsZhLike()
-
-	var sb strings.Builder
-	sb.WriteString(e.i18n.T(MsgConfigTitle))
-	for _, item := range items {
-		sb.WriteString(fmt.Sprintf("`%s` = `%s`\n  %s\n\n", item.key, item.getFunc(), item.description(isZh)))
-	}
-
+func (e *Engine) renderConfigCard(p Platform) *Card {
+	body, hint := e.formatConfigMenu(p)
 	return NewCard().Title(e.i18n.T(MsgCardTitleConfig), "grey").
-		Markdown(sb.String()).
-		Note(e.i18n.T(MsgConfigHint)).
+		Markdown(body).
+		Note(hint).
 		Buttons(e.cardBackButton()).
 		Build()
 }
@@ -16198,25 +16207,16 @@ func sanitizeTelegramDisplayCommand(cmd string) string {
 // configItem describes a configurable runtime parameter.
 type configItem struct {
 	key     string
-	desc    string // en description
-	descZh  string // zh description
+	desc    MsgKey
 	getFunc func() string
 	setFunc func(string) error
-}
-
-func (ci configItem) description(isZh bool) string {
-	if isZh && ci.descZh != "" {
-		return ci.descZh
-	}
-	return ci.desc
 }
 
 func (e *Engine) configItems() []configItem {
 	return []configItem{
 		{
-			key:    "mode",
-			desc:   "Display mode: full, compact, quiet",
-			descZh: "显示模式: full, compact, quiet",
+			key:  "mode",
+			desc: MsgConfigDisplayMode,
 			getFunc: func() string {
 				if e.display.Mode == "" {
 					return "full"
@@ -16245,9 +16245,8 @@ func (e *Engine) configItems() []configItem {
 			},
 		},
 		{
-			key:    "thinking_messages",
-			desc:   "Whether thinking messages are shown (true/false)",
-			descZh: "是否显示思考消息 (true/false)",
+			key:  "thinking_messages",
+			desc: MsgConfigThinkingMessages,
 			getFunc: func() string {
 				return fmt.Sprintf("%t", e.display.ThinkingMessages)
 			},
@@ -16264,9 +16263,8 @@ func (e *Engine) configItems() []configItem {
 			},
 		},
 		{
-			key:    "thinking_max_len",
-			desc:   "Max chars for thinking messages (0=no truncation)",
-			descZh: "思考消息最大长度 (0=不截断)",
+			key:  "thinking_max_len",
+			desc: MsgConfigThinkingMaxLen,
 			getFunc: func() string {
 				return fmt.Sprintf("%d", e.display.ThinkingMaxLen)
 			},
@@ -16286,9 +16284,8 @@ func (e *Engine) configItems() []configItem {
 			},
 		},
 		{
-			key:    "tool_messages",
-			desc:   "Whether tool progress messages are shown (true/false)",
-			descZh: "是否显示工具进度消息 (true/false)",
+			key:  "tool_messages",
+			desc: MsgConfigToolMessages,
 			getFunc: func() string {
 				return fmt.Sprintf("%t", e.display.ToolMessages)
 			},
@@ -16305,9 +16302,8 @@ func (e *Engine) configItems() []configItem {
 			},
 		},
 		{
-			key:    "tool_max_len",
-			desc:   "Max chars for tool use messages (0=no truncation)",
-			descZh: "工具消息最大长度 (0=不截断)",
+			key:  "tool_max_len",
+			desc: MsgConfigToolMaxLen,
 			getFunc: func() string {
 				return fmt.Sprintf("%d", e.display.ToolMaxLen)
 			},
@@ -16332,25 +16328,20 @@ func (e *Engine) configItems() []configItem {
 func (e *Engine) cmdConfig(p Platform, msg *Message, args []string) {
 	if len(args) == 0 {
 		if !supportsCards(p) {
-			items := e.configItems()
-			isZh := e.i18n.IsZhLike()
-			var sb strings.Builder
-			sb.WriteString(e.i18n.T(MsgConfigTitle))
-			for _, item := range items {
-				sb.WriteString(fmt.Sprintf("`%s` = `%s`\n  %s\n\n", item.key, item.getFunc(), item.description(isZh)))
-			}
-			sb.WriteString(e.i18n.T(MsgConfigHint))
-			e.reply(p, msg.ReplyCtx, sb.String())
+			body, hint := e.formatConfigMenu(p)
+			e.reply(p, msg.ReplyCtx, body+hint)
 			return
 		}
 
-		e.replyWithCard(p, msg.ReplyCtx, e.renderConfigCard())
+		e.replyWithCard(p, msg.ReplyCtx, e.renderConfigCard(p))
 		return
 	}
 
 	items := e.configItems()
-	isZh := e.i18n.IsZhLike()
 	sub := matchSubCommand(strings.ToLower(args[0]), []string{"get", "set", "reload"})
+	if e.cmdConfigReplyAllChats(p, msg, args, sub) {
+		return
+	}
 	if e.cmdConfigAccess(p, msg, args, sub) {
 		return
 	}
@@ -16367,7 +16358,7 @@ func (e *Engine) cmdConfig(p Platform, msg *Message, args []string) {
 		key := strings.ToLower(args[1])
 		for _, item := range items {
 			if item.key == key {
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf("`%s` = `%s`\n  %s", key, item.getFunc(), item.description(isZh)))
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf("`%s` = `%s`\n  %s", key, item.getFunc(), e.i18n.T(item.desc)))
 				return
 			}
 		}
@@ -16403,7 +16394,7 @@ func (e *Engine) cmdConfig(p Platform, msg *Message, args []string) {
 					}
 					e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgConfigUpdated, key, item.getFunc()))
 				} else {
-					e.reply(p, msg.ReplyCtx, fmt.Sprintf("`%s` = `%s`\n  %s", key, item.getFunc(), item.description(isZh)))
+					e.reply(p, msg.ReplyCtx, fmt.Sprintf("`%s` = `%s`\n  %s", key, item.getFunc(), e.i18n.T(item.desc)))
 				}
 				return
 			}

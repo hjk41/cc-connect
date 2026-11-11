@@ -3466,6 +3466,7 @@ type ProjectSettingsUpdate struct {
 	InjectSender              *bool
 	PlatformAllowFrom         map[string]string
 	PlatformAllowGroupMembers map[string]string
+	PlatformReplyAllChats     map[string]string
 	// WorkspaceMode and WorkspaceBaseDir control the project-level
 	// multi-workspace feature (ProjectConfig.Mode/BaseDir), distinct from
 	// Mode above (which is the agent permission mode, e.g. yolo/plan).
@@ -3640,6 +3641,16 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 					proj.Platforms[j].Options = map[string]any{}
 				}
 				proj.Platforms[j].Options["allow_group_members"] = strings.TrimSpace(groups)
+			}
+		}
+		for j := range proj.Platforms {
+			for typ, chats := range update.PlatformReplyAllChats {
+				if strings.EqualFold(strings.TrimSpace(typ), strings.TrimSpace(proj.Platforms[j].Type)) {
+					if proj.Platforms[j].Options == nil {
+						proj.Platforms[j].Options = map[string]any{}
+					}
+					proj.Platforms[j].Options["reply_all_chats"] = strings.TrimSpace(chats)
+				}
 			}
 		}
 		return saveConfig(cfg)

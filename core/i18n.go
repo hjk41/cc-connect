@@ -492,13 +492,30 @@ const (
 	MsgSkillsHint             MsgKey = "skills_hint"
 	MsgSkillsTelegramMenuHint MsgKey = "skills_telegram_menu_hint"
 
-	MsgConfigTitle       MsgKey = "config_title"
-	MsgConfigHint        MsgKey = "config_hint"
-	MsgConfigGetUsage    MsgKey = "config_get_usage"
-	MsgConfigSetUsage    MsgKey = "config_set_usage"
-	MsgConfigUpdated     MsgKey = "config_updated"
-	MsgConfigKeyNotFound MsgKey = "config_key_not_found"
-	MsgConfigReloaded    MsgKey = "config_reloaded"
+	MsgConfigDisplayMode      MsgKey = "config_display_mode"
+	MsgConfigThinkingMessages MsgKey = "config_thinking_messages"
+	MsgConfigThinkingMaxLen   MsgKey = "config_thinking_max_len"
+	MsgConfigToolMessages     MsgKey = "config_tool_messages"
+	MsgConfigToolMaxLen       MsgKey = "config_tool_max_len"
+	MsgConfigPlatformSettings MsgKey = "config_platform_settings"
+	MsgConfigAllowFrom        MsgKey = "config_allow_from"
+	MsgConfigAllowAllMembers  MsgKey = "config_allow_all_members"
+	MsgConfigReplyAllChats    MsgKey = "config_reply_all_chats"
+	MsgConfigAccessHint       MsgKey = "config_access_hint"
+	MsgConfigReloadHint       MsgKey = "config_reload_hint"
+
+	MsgConfigTitle                MsgKey = "config_title"
+	MsgConfigHint                 MsgKey = "config_hint"
+	MsgConfigGetUsage             MsgKey = "config_get_usage"
+	MsgConfigSetUsage             MsgKey = "config_set_usage"
+	MsgConfigUpdated              MsgKey = "config_updated"
+	MsgConfigKeyNotFound          MsgKey = "config_key_not_found"
+	MsgConfigReloaded             MsgKey = "config_reloaded"
+	MsgReplyAllChatsUnsupported   MsgKey = "reply_all_chats_unsupported"
+	MsgReplyAllChatsUsage         MsgKey = "reply_all_chats_usage"
+	MsgReplyAllChatsInvalid       MsgKey = "reply_all_chats_invalid"
+	MsgReplyAllChatsSaveFailed    MsgKey = "reply_all_chats_save_failed"
+	MsgReplyAllChatsGlobalEnabled MsgKey = "reply_all_chats_global_enabled"
 
 	MsgDoctorRunning MsgKey = "doctor_running"
 	MsgDoctorTitle   MsgKey = "doctor_title"
@@ -632,6 +649,13 @@ const (
 	MsgBuiltinCmdDir       MsgKey = "dir"
 	MsgBuiltinCmdDiff      MsgKey = "diff"
 	MsgBuiltinCmdPs        MsgKey = "ps"
+	MsgBuiltinCmdCancel    MsgKey = "cancel"
+	MsgBuiltinCmdTimer     MsgKey = "timer"
+	MsgBuiltinCmdHeartbeat MsgKey = "heartbeat"
+	MsgBuiltinCmdTts       MsgKey = "tts"
+	MsgBuiltinCmdWorkspace MsgKey = "workspace"
+	MsgBuiltinCmdWhoami    MsgKey = "whoami"
+	MsgBuiltinCmdWeb       MsgKey = "web"
 
 	MsgDiffEmpty       MsgKey = "diff_empty"
 	MsgDiffNoDiff2HTML MsgKey = "diff_no_diff2html"
@@ -1116,6 +1140,11 @@ var messages = map[MsgKey]map[Language]string{
 			"/status\n  Show system status\n\n" +
 			"/version\n  Show cc-connect version\n\n" +
 			"/whoami\n  Show your User ID (for allow_from / admin_from)\n\n" +
+			"/quiet [full|compact|quiet]\n  View/switch display mode\n\n" +
+			"/cancel\n  Stop execution and start a fresh session\n\n" +
+			"/web [status|setup]\n  View/set up the web management panel\n\n" +
+			"/diff [target]\n  Send git diff as an HTML file\n\n" +
+			"/ps <message>\n  Send additional instructions to the running task\n\n" +
 			"/help\n  Show this help\n\n" +
 			"Tip: Commands support prefix matching, e.g. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Custom commands: define via `/commands add` or `[[commands]]` in config.toml.\n\n" +
@@ -1160,6 +1189,11 @@ var messages = map[MsgKey]map[Language]string{
 			"/status\n  查看系统状态\n\n" +
 			"/version\n  查看 cc-connect 版本\n\n" +
 			"/whoami\n  查看你的 User ID（用于 allow_from / admin_from 配置）\n\n" +
+			"/quiet [full|compact|quiet]\n  查看／切换显示模式\n\n" +
+			"/cancel\n  停止执行并创建新会话\n\n" +
+			"/web [status|setup]\n  查看／设置 Web 管理面板\n\n" +
+			"/diff [目标]\n  以 HTML 文件发送 git diff\n\n" +
+			"/ps <消息>\n  向正在执行的任务追加补充信息\n\n" +
 			"/help\n  显示此帮助\n\n" +
 			"提示：命令支持前缀匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自定义命令：通过 `/commands add` 添加，或在 config.toml 中配置 `[[commands]]`。\n\n" +
@@ -1203,6 +1237,12 @@ var messages = map[MsgKey]map[Language]string{
 			"/status\n  查看系統狀態\n\n" +
 			"/version\n  查看 cc-connect 版本\n\n" +
 			"/whoami\n  查看你的 User ID（用於 allow_from / admin_from 設定）\n\n" +
+			"/quiet [full|compact|quiet]\n  查看／切換顯示模式\n\n" +
+			"/cancel\n  停止執行並建立新會話\n\n" +
+			"/web [status|setup]\n  查看／設定 Web 管理面板\n\n" +
+			"/diff [目標]\n  以 HTML 檔案傳送 git diff\n\n" +
+			"/ps <訊息>\n  向正在執行的任務追加補充資訊\n\n" +
+			"/show <引用>\n  按引用查看檔案、目錄或程式碼片段\n\n" +
 			"/help\n  顯示此說明\n\n" +
 			"提示：命令支持前綴匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自訂命令：透過 `/commands add` 新增，或在 config.toml 中配置 `[[commands]]`。\n\n" +
@@ -1245,6 +1285,13 @@ var messages = map[MsgKey]map[Language]string{
 			"/status\n  システム状態を表示\n\n" +
 			"/version\n  cc-connect のバージョンを表示\n\n" +
 			"/whoami\n  あなたの User ID を表示（allow_from / admin_from 設定用）\n\n" +
+			"/quiet [full|compact|quiet]\n  表示モードの確認／切り替え\n\n" +
+			"/cancel\n  実行を停止して新しいセッションを開始\n\n" +
+			"/web [status|setup]\n  Web 管理パネルの表示／設定\n\n" +
+			"/diff [ターゲット]\n  git diff を HTML ファイルとして送信\n\n" +
+			"/ps <メッセージ>\n  実行中のタスクに補足情報を送信\n\n" +
+			"/show <参照>\n  ファイル、ディレクトリ、コード断片を参照で表示\n\n" +
+			"/search <キーワード>\n  名前や ID でセッションを検索\n\n" +
 			"/help\n  このヘルプを表示\n\n" +
 			"ヒント：コマンドはプレフィックスマッチに対応しています。例: `/pro l` = `/provider list`、`/sw 2` = `/switch 2`。\n\n" +
 			"カスタムコマンド: `/commands add` または config.toml の `[[commands]]` で定義。\n\n" +
@@ -1287,6 +1334,13 @@ var messages = map[MsgKey]map[Language]string{
 			"/status\n  Mostrar estado del sistema\n\n" +
 			"/version\n  Mostrar versión de cc-connect\n\n" +
 			"/whoami\n  Mostrar tu User ID (para allow_from / admin_from)\n\n" +
+			"/quiet [full|compact|quiet]\n  Ver/cambiar modo de visualización\n\n" +
+			"/cancel\n  Detener ejecución e iniciar una sesión nueva\n\n" +
+			"/web [status|setup]\n  Ver/configurar el panel de gestión web\n\n" +
+			"/diff [objetivo]\n  Enviar git diff como archivo HTML\n\n" +
+			"/ps <mensaje>\n  Enviar instrucciones adicionales a la tarea en curso\n\n" +
+			"/show <referencia>\n  Ver archivo, directorio o código por referencia\n\n" +
+			"/search <palabra clave>\n  Buscar sesiones por nombre o ID\n\n" +
 			"/help\n  Mostrar esta ayuda\n\n" +
 			"Consejo: Los comandos admiten coincidencia por prefijo, ej. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Comandos personalizados: use `/commands add` o defina `[[commands]]` en config.toml.\n\n" +
@@ -3047,6 +3101,83 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "El menú de comandos de Telegram está lleno, así que los skills no aparecen allí. Aun así puedes invocarlos escribiendo /<nombre-skill> manualmente.",
 	},
 
+	MsgConfigDisplayMode: {
+		LangEnglish:            "Display mode: full, compact, quiet",
+		LangChinese:            "显示模式：full、compact、quiet",
+		LangTraditionalChinese: "顯示模式：full、compact、quiet",
+		LangJapanese:           "表示モード: full、compact、quiet",
+		LangSpanish:            "Modo de visualización: full, compact, quiet",
+	},
+	MsgConfigThinkingMessages: {
+		LangEnglish:            "Show thinking messages (true/false)",
+		LangChinese:            "是否显示思考消息 (true/false)",
+		LangTraditionalChinese: "是否顯示思考訊息 (true/false)",
+		LangJapanese:           "思考メッセージを表示 (true/false)",
+		LangSpanish:            "Mostrar mensajes de razonamiento (true/false)",
+	},
+	MsgConfigThinkingMaxLen: {
+		LangEnglish:            "Max thinking message length (0 = no truncation)",
+		LangChinese:            "思考消息最大长度 (0=不截断)",
+		LangTraditionalChinese: "思考訊息最大長度 (0=不截斷)",
+		LangJapanese:           "思考メッセージの最大長 (0 = 省略なし)",
+		LangSpanish:            "Longitud máxima del razonamiento (0 = sin truncar)",
+	},
+	MsgConfigToolMessages: {
+		LangEnglish:            "Show tool progress messages (true/false)",
+		LangChinese:            "是否显示工具进度消息 (true/false)",
+		LangTraditionalChinese: "是否顯示工具進度訊息 (true/false)",
+		LangJapanese:           "ツール進捗メッセージを表示 (true/false)",
+		LangSpanish:            "Mostrar progreso de herramientas (true/false)",
+	},
+	MsgConfigToolMaxLen: {
+		LangEnglish:            "Max tool message length (0 = no truncation)",
+		LangChinese:            "工具消息最大长度 (0=不截断)",
+		LangTraditionalChinese: "工具訊息最大長度 (0=不截斷)",
+		LangJapanese:           "ツールメッセージの最大長 (0 = 省略なし)",
+		LangSpanish:            "Longitud máxima de mensajes de herramientas (0 = sin truncar)",
+	},
+	MsgConfigPlatformSettings: {
+		LangEnglish:            "**Current platform settings (admin changes only; effective immediately)**",
+		LangChinese:            "**当前平台配置（仅管理员可修改，立即生效）**",
+		LangTraditionalChinese: "**目前平台配置（僅管理員可修改，立即生效）**",
+		LangJapanese:           "**現在のプラットフォーム設定（変更は管理者のみ、即時反映）**",
+		LangSpanish:            "**Configuración de esta plataforma (solo administradores; efecto inmediato)**",
+	},
+	MsgConfigAllowFrom: {
+		LangEnglish:            "Allowed user IDs; * allows all users",
+		LangChinese:            "允许使用 bot 的用户 ID；* 表示所有用户",
+		LangTraditionalChinese: "允許使用 bot 的使用者 ID；* 表示所有使用者",
+		LangJapanese:           "利用可能なユーザー ID。* は全ユーザーを許可",
+		LangSpanish:            "IDs de usuarios permitidos; * permite a todos",
+	},
+	MsgConfigAllowAllMembers: {
+		LangEnglish:            "Groups whose members may use the bot; none = no group grants. Separate from mention-free replies.",
+		LangChinese:            "授权全体成员使用 bot 的群 ID；none 表示未授权任何整群。与免 @ 群列表独立。",
+		LangTraditionalChinese: "授權全體成員使用 bot 的群組 ID；none 表示未授權任何整個群組。與免 @ 群組清單獨立。",
+		LangJapanese:           "全メンバーの利用を許可するグループ ID。none = なし。メンション不要設定とは別です。",
+		LangSpanish:            "Grupos donde todos pueden usar el bot; none = ninguno. Independiente de las respuestas sin mención.",
+	},
+	MsgConfigReplyAllChats: {
+		LangEnglish:            "Groups that receive replies without @bot; none = none. User/group authorization still applies.",
+		LangChinese:            "无需 @bot 即可回复的群 ID；none 表示无。仍检查用户／群授权。",
+		LangTraditionalChinese: "無需 @bot 即可回覆的群組 ID；none 表示無。仍檢查使用者／群組授權。",
+		LangJapanese:           "@bot なしで返信するグループ ID。none = なし。ユーザー／グループの利用権限は引き続き必要です。",
+		LangSpanish:            "Grupos con respuestas sin @bot; none = ninguno. Se siguen comprobando permisos de usuarios y grupos.",
+	},
+	MsgConfigAccessHint: {
+		LangEnglish:            "Access (admin):\n`/config set allow_from +USER_ID` — add a user; use -USER_ID to remove\n`/whoami` — find your user/group IDs\n`/config set allow_all_members +$this` — grant all members of this group\n`/config set allow_all_members -$this` — revoke this group; none clears the group list",
+		LangChinese:            "授权管理（管理员）：\n`/config set allow_from +USER_ID` — 添加用户；-USER_ID 移除用户\n`/whoami` — 查看用户／群 ID\n`/config set allow_all_members +$this` — 授权当前群全体成员\n`/config set allow_all_members -$this` — 撤销当前群授权；none 清空群列表",
+		LangTraditionalChinese: "授權管理（管理員）：\n`/config set allow_from +USER_ID` — 新增使用者；-USER_ID 移除使用者\n`/whoami` — 查看使用者／群組 ID\n`/config set allow_all_members +$this` — 授權目前群組全體成員\n`/config set allow_all_members -$this` — 撤銷目前群組授權；none 清空群組清單",
+		LangJapanese:           "利用権限（管理者）：\n`/config set allow_from +USER_ID` — ユーザーを追加。-USER_ID で削除\n`/whoami` — ユーザー／グループ ID を確認\n`/config set allow_all_members +$this` — このグループの全員を許可\n`/config set allow_all_members -$this` — このグループの許可を解除。none でグループ一覧を消去",
+		LangSpanish:            "Permisos (administradores):\n`/config set allow_from +USER_ID` — añadir usuario; -USER_ID para eliminar\n`/whoami` — ver IDs de usuario y grupo\n`/config set allow_all_members +$this` — permitir a todos en este grupo\n`/config set allow_all_members -$this` — revocar este grupo; none vacía la lista",
+	},
+	MsgConfigReloadHint: {
+		LangEnglish:            "`/config reload` — reload display settings, providers and custom commands from config.toml. Other agent/platform options may require a restart.",
+		LangChinese:            "`/config reload` — 从 config.toml 重载显示设置、Provider 和自定义命令。其他 Agent／平台选项可能需要重启。",
+		LangTraditionalChinese: "`/config reload` — 從 config.toml 重新載入顯示設定、Provider 和自訂命令。其他 Agent／平台選項可能需要重新啟動。",
+		LangJapanese:           "`/config reload` — config.toml から表示設定、プロバイダ、カスタムコマンドを再読込。その他のエージェント／プラットフォーム設定は再起動が必要な場合があります。",
+		LangSpanish:            "`/config reload` — recargar visualización, proveedores y comandos personalizados desde config.toml. Otras opciones del agente/plataforma pueden requerir reiniciar.",
+	},
 	MsgConfigTitle: {
 		LangEnglish:            "⚙️ **Runtime Configuration**\n\n",
 		LangChinese:            "⚙️ **运行时配置**\n\n",
@@ -3055,31 +3186,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "⚙️ **Configuración en tiempo de ejecución**\n\n",
 	},
 	MsgConfigHint: {
-		LangEnglish: "Usage:\n" +
-			"`/config` — show all\n" +
-			"`/config thinking_max_len 200` — update\n" +
-			"`/config get thinking_max_len` — view single\n\n" +
-			"Set to `0` to disable truncation.",
-		LangChinese: "用法：\n" +
-			"`/config` — 查看所有配置\n" +
-			"`/config thinking_max_len 200` — 修改配置\n" +
-			"`/config get thinking_max_len` — 查看单项\n\n" +
-			"设为 `0` 表示不截断。",
-		LangTraditionalChinese: "用法：\n" +
-			"`/config` — 查看所有配置\n" +
-			"`/config thinking_max_len 200` — 修改配置\n" +
-			"`/config get thinking_max_len` — 查看單項\n\n" +
-			"設為 `0` 表示不截斷。",
-		LangJapanese: "使い方:\n" +
-			"`/config` — 全設定を表示\n" +
-			"`/config thinking_max_len 200` — 変更\n" +
-			"`/config get thinking_max_len` — 単一確認\n\n" +
-			"`0` = 切り捨てなし",
-		LangSpanish: "Uso:\n" +
-			"`/config` — ver todo\n" +
-			"`/config thinking_max_len 200` — actualizar\n" +
-			"`/config get thinking_max_len` — ver uno\n\n" +
-			"Establecer `0` para no truncar.",
+		LangEnglish:            "Usage:\n`/config` — view available runtime settings\n`/config set thinking_max_len 200` — update\n`/config get thinking_max_len` — view one setting\n\nLength 0 means no truncation. Other settings are in config.toml.",
+		LangChinese:            "用法：\n`/config` — 查看可用的运行时配置\n`/config set thinking_max_len 200` — 修改配置\n`/config get thinking_max_len` — 查看单项\n\n长度设为 `0` 表示不截断。其他配置请查看 config.toml。",
+		LangTraditionalChinese: "用法：\n`/config` — 查看可用的執行階段配置\n`/config set thinking_max_len 200` — 修改配置\n`/config get thinking_max_len` — 查看單項\n\n長度設為 `0` 表示不截斷。其他配置請查看 config.toml。",
+		LangJapanese:           "使い方:\n`/config` — 変更可能なランタイム設定を表示\n`/config set thinking_max_len 200` — 変更\n`/config get thinking_max_len` — 単一設定を確認\n\n長さ 0 は省略なし。その他の設定は config.toml を参照。",
+		LangSpanish:            "Uso:\n`/config` — ver opciones disponibles en tiempo de ejecución\n`/config set thinking_max_len 200` — actualizar\n`/config get thinking_max_len` — ver una opción\n\nLongitud 0 significa sin truncar. Otras opciones están en config.toml.",
 	},
 	MsgConfigGetUsage: {
 		LangEnglish:            "Usage: `/config get thinking_max_len`",
@@ -3108,6 +3219,41 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "❌ 未知配置項 `%s`。使用 `/config` 查看可用配置。",
 		LangJapanese:           "❌ 不明な設定キー `%s`。`/config` で一覧を確認してください。",
 		LangSpanish:            "❌ Clave de configuración desconocida `%s`. Use `/config` para ver las disponibles.",
+	},
+	MsgReplyAllChatsUnsupported: {
+		LangEnglish:            "This platform does not support configuring mention-free chats.",
+		LangChinese:            "此平台不支持设置免 @ 群列表。",
+		LangTraditionalChinese: "此平台不支援設定免 @ 群組清單。",
+		LangJapanese:           "このプラットフォームではメンション不要のチャットを設定できません。",
+		LangSpanish:            "Esta plataforma no permite configurar chats sin mención.",
+	},
+	MsgReplyAllChatsUsage: {
+		LangEnglish:            "Use `/config get reply_all_chats`, `/config set reply_all_chats +$this`, `-$this`, or `none`. You can also use an explicit group ID.",
+		LangChinese:            "用法：`/config get reply_all_chats`；`/config set reply_all_chats +$this` 开启当前群免 @，`-$this` 关闭，`none` 清空。也可使用具体群 ID。",
+		LangTraditionalChinese: "用法：`/config get reply_all_chats`；`/config set reply_all_chats +$this` 開啟目前群組免 @，`-$this` 關閉，`none` 清空。也可使用指定群組 ID。",
+		LangJapanese:           "`/config get reply_all_chats` で確認し、`/config set reply_all_chats +$this` で現在のグループを追加、`-$this` で削除、`none` で全削除します。グループ ID も指定できます。",
+		LangSpanish:            "Usa `/config get reply_all_chats` o `/config set reply_all_chats +$this` para añadir el grupo actual, `-$this` para quitarlo y `none` para vaciar la lista. También puedes indicar un ID de grupo.",
+	},
+	MsgReplyAllChatsInvalid: {
+		LangEnglish:            "Invalid chat list. Use explicit group IDs, or $this inside a group; '*' is not allowed.",
+		LangChinese:            "群列表无效：请使用具体群 ID，或在群内使用 $this；不支持 *。",
+		LangTraditionalChinese: "群組清單無效：請使用指定群組 ID，或在群組內使用 $this；不支援 *。",
+		LangJapanese:           "無効なチャット一覧です。グループ ID、またはグループ内で $this を指定してください。* は使えません。",
+		LangSpanish:            "Lista no válida. Usa IDs de grupo o $this dentro de un grupo; no se admite '*'.",
+	},
+	MsgReplyAllChatsSaveFailed: {
+		LangEnglish:            "Could not save the chat list. The previous runtime setting has been restored; check the service logs.",
+		LangChinese:            "群列表保存失败，已恢复原来的运行设置，请检查服务日志。",
+		LangTraditionalChinese: "群組清單儲存失敗，已還原原本的執行設定，請檢查服務日誌。",
+		LangJapanese:           "チャット一覧を保存できませんでした。元の設定に戻しました。サービスログを確認してください。",
+		LangSpanish:            "No se pudo guardar la lista. Se restauró la configuración anterior; consulta los registros del servicio.",
+	},
+	MsgReplyAllChatsGlobalEnabled: {
+		LangEnglish:            "The global group_reply_all setting is enabled, so all authorized groups still reply without mentions. Set it to false to use only this list.",
+		LangChinese:            "全局 group_reply_all 已开启，所有获准群仍会免 @ 回复。设为 false 后才仅按此列表生效。",
+		LangTraditionalChinese: "全域 group_reply_all 已開啟，所有獲准群組仍會免 @ 回覆。設為 false 後才僅依此清單生效。",
+		LangJapanese:           "全体設定 group_reply_all が有効なため、許可された全グループでメンション不要です。この一覧だけを使うには false にしてください。",
+		LangSpanish:            "group_reply_all está activado: todos los grupos autorizados responden sin mención. Ponlo en false para usar solo esta lista.",
 	},
 	MsgConfigReloaded: {
 		LangEnglish:            "✅ Config reloaded\n\nDisplay updated: %v\nProviders synced: %d\nCommands synced: %d",
@@ -3817,11 +3963,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Ver/cambiar idioma, arg: [en|zh|zh-TW|ja|es|auto]",
 	},
 	MsgBuiltinCmdQuiet: {
-		LangEnglish:            "Toggle thinking/tool progress, arg: [global]",
-		LangChinese:            "开关思考和工具进度消息, 参数: [global]",
-		LangTraditionalChinese: "開關思考和工具進度訊息, 參數: [global]",
-		LangJapanese:           "思考/ツール進捗メッセージの表示切替, 引数: [global]",
-		LangSpanish:            "Alternar mensajes de progreso, arg: [global]",
+		LangEnglish:            "Switch display mode: full, compact, quiet",
+		LangChinese:            "切换显示模式：full、compact、quiet",
+		LangTraditionalChinese: "切換顯示模式：full、compact、quiet",
+		LangJapanese:           "表示モード切替: full、compact、quiet",
+		LangSpanish:            "Cambiar modo de visualización: full, compact, quiet",
 	},
 	MsgBuiltinCmdCompress: {
 		LangEnglish:            "Compress conversation context",
@@ -3955,6 +4101,55 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "向正在執行的任務追加補充資訊",
 		LangJapanese:           "実行中のタスクに補足情報を送信",
 		LangSpanish:            "Enviar un P.S. a la tarea en curso",
+	},
+	MsgBuiltinCmdCancel: {
+		LangEnglish:            "Stop execution and start a fresh session",
+		LangChinese:            "停止执行并创建新会话",
+		LangTraditionalChinese: "停止執行並建立新會話",
+		LangJapanese:           "実行を停止して新しいセッションを開始",
+		LangSpanish:            "Detener ejecución e iniciar una sesión nueva",
+	},
+	MsgBuiltinCmdTimer: {
+		LangEnglish:            "Manage one-shot timers",
+		LangChinese:            "管理一次性定时器",
+		LangTraditionalChinese: "管理一次性定時器",
+		LangJapanese:           "ワンショットタイマーを管理",
+		LangSpanish:            "Gestionar temporizadores de uso único",
+	},
+	MsgBuiltinCmdHeartbeat: {
+		LangEnglish:            "Manage heartbeat tasks",
+		LangChinese:            "管理心跳任务",
+		LangTraditionalChinese: "管理心跳任務",
+		LangJapanese:           "ハートビートを管理",
+		LangSpanish:            "Gestionar tareas de heartbeat",
+	},
+	MsgBuiltinCmdTts: {
+		LangEnglish:            "View/switch text-to-speech mode",
+		LangChinese:            "查看／切换语音合成模式",
+		LangTraditionalChinese: "查看／切換語音合成模式",
+		LangJapanese:           "音声合成モードの表示／切り替え",
+		LangSpanish:            "Ver/cambiar modo de síntesis de voz",
+	},
+	MsgBuiltinCmdWorkspace: {
+		LangEnglish:            "View/initialize the workspace",
+		LangChinese:            "查看／初始化工作区",
+		LangTraditionalChinese: "查看／初始化工作區",
+		LangJapanese:           "ワークスペースの表示／初期化",
+		LangSpanish:            "Ver/inicializar el espacio de trabajo",
+	},
+	MsgBuiltinCmdWhoami: {
+		LangEnglish:            "Show user and chat IDs",
+		LangChinese:            "查看用户和群 ID",
+		LangTraditionalChinese: "查看使用者和群組 ID",
+		LangJapanese:           "ユーザーとチャットの ID を表示",
+		LangSpanish:            "Mostrar IDs de usuario y chat",
+	},
+	MsgBuiltinCmdWeb: {
+		LangEnglish:            "View/set up the web management panel",
+		LangChinese:            "查看／设置 Web 管理面板",
+		LangTraditionalChinese: "查看／設定 Web 管理面板",
+		LangJapanese:           "Web 管理パネルの表示／設定",
+		LangSpanish:            "Ver/configurar el panel de gestión web",
 	},
 	MsgDiffEmpty: {
 		LangEnglish:            "No diff — clean working tree (or no changes vs `%s`).",

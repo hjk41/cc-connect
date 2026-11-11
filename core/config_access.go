@@ -132,13 +132,16 @@ func (e *Engine) resolveAccessTokens(msg *Message, key, raw string) ([]string, e
 		}
 		switch {
 		case field == "$this":
-			if key != "allow_all_members" {
+			if key != "allow_all_members" && key != "reply_all_chats" {
 				return nil, fmt.Errorf("$this is only valid for allow_all_members")
 			}
 			if msg.ChatType != "group" {
 				return nil, fmt.Errorf("$this requires a group chat")
 			}
-			chatID := effectiveChannelID(msg)
+			chatID := msg.ChannelID
+			if chatID == "" {
+				chatID = effectiveChannelID(msg)
+			}
 			if chatID == "" {
 				return nil, fmt.Errorf("cannot resolve the current group chat id")
 			}

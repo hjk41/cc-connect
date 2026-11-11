@@ -2878,6 +2878,7 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 		ShowWorkdirIndicator:      &hideWorkdir,
 		PlatformAllowFrom:         map[string]string{"telegram": "u1", "Feishu": "u2"},
 		PlatformAllowGroupMembers: map[string]string{"Feishu": "oc_team"},
+		PlatformReplyAllChats:     map[string]string{"Feishu": "oc_reply"},
 	})
 	if err != nil {
 		t.Fatalf("SaveProjectSettings: %v", err)
@@ -2905,6 +2906,19 @@ func TestSaveProjectSettings_ExtraFields(t *testing.T) {
 	}
 	if stringMapValue(proj.Platforms[1].Options, "allow_group_members") != "oc_team" {
 		t.Fatalf("feishu allow_group_members = %q, want oc_team", stringMapValue(proj.Platforms[1].Options, "allow_group_members"))
+	}
+	if got := stringMapValue(proj.Platforms[1].Options, "reply_all_chats"); got != "oc_reply" {
+		t.Fatalf("feishu reply_all_chats = %q, want oc_reply", got)
+	}
+	if got := stringMapValue(proj.Platforms[0].Options, "reply_all_chats"); got != "" {
+		t.Fatalf("reply_all_chats leaked to another platform: %q", got)
+	}
+	if err := SaveProjectSettings("alpha", ProjectSettingsUpdate{PlatformReplyAllChats: map[string]string{"Feishu": ""}}); err != nil {
+		t.Fatal(err)
+	}
+	cleared := readConfigFixture(t, configPath)
+	if got := stringMapValue(cleared.Projects[0].Platforms[1].Options, "reply_all_chats"); got != "" {
+		t.Fatalf("cleared list restored after reload: %q", got)
 	}
 }
 
