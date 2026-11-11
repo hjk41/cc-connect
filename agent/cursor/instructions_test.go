@@ -21,7 +21,7 @@ func TestInstructionsFileReachesCursorOnEveryTurn(t *testing.T) {
 	a, err := New(map[string]any{
 		"cmd": cli, "work_dir": dir, "model": "fixture-alpha", "mode": "yolo",
 		"instructions_file": instructions,
-		"env":               map[string]any{"CURSOR_TEST_ARGS": argsFile},
+		"env":               map[string]any{"CURSOR_TEST_ARGS": filepath.ToSlash(argsFile)},
 	})
 	if err != nil {
 		t.Fatal(err)
