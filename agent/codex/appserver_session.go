@@ -40,6 +40,12 @@ type initResponse struct {
 	ProtocolVersion string `json:"protocolVersion"`
 }
 
+// appServerActivePermissionProfile identifies the permissions selected by Codex.
+type appServerActivePermissionProfile struct {
+	ID string `json:"id"`
+}
+
+// threadStartResponse carries the new thread metadata and permission provenance.
 type threadStartResponse struct {
 	appServerPermissionState
 	Cwd             string  `json:"cwd"`
@@ -50,6 +56,7 @@ type threadStartResponse struct {
 	} `json:"thread"`
 }
 
+// threadResumeResponse carries the resumed thread metadata and permission provenance.
 type threadResumeResponse struct {
 	appServerPermissionState
 	Cwd             string  `json:"cwd"`
@@ -142,20 +149,22 @@ type appServerRequestUserInputAnswer struct {
 	Answers []string `json:"answers"`
 }
 
+// appServerSession owns the stdio JSON-RPC transport and the active thread state.
 type appServerSession struct {
-	allowedTools    []string
-	cliBin          string
-	cliExtraArgs    []string
-	url             string
-	workDir         string
-	model           string
-	effort          string
-	baseURL         string
-	modelProvider   string
-	extraEnv        []string
-	codexHome       string
-	promptPreamble  string
-	developerPrompt string
+	allowedTools      []string
+	cliBin            string
+	cliExtraArgs      []string
+	url               string
+	workDir           string
+	model             string
+	effort            string
+	permissionProfile string
+	baseURL           string
+	modelProvider     string
+	extraEnv          []string
+	codexHome         string
+	promptPreamble    string
+	developerPrompt   string
 
 	events       chan core.Event
 	eventsMu     sync.RWMutex // publishers share the lock; Close owns channel closure
@@ -214,7 +223,8 @@ const (
 func newAppServerSession(
 	ctx context.Context, cliBin string, cliExtraArgs []string,
 	url, workDir, model, effort, mode, resumeID, baseURL, modelProvider string,
-	extraEnv []string, codexHome, systemPrompt, appendPrompt, developerPrompt string, allowedTools []string,
+	extraEnv []string, codexHome, systemPrompt, appendPrompt, developerPrompt string,
+	allowedTools []string, permissionProfile string,
 ) (*appServerSession, error) {
 	spec, err := resolveCodexMode(mode)
 	if err != nil {
@@ -222,26 +232,27 @@ func newAppServerSession(
 	}
 	sessionCtx, cancel := context.WithCancel(ctx)
 	s := &appServerSession{
-		allowedTools:     append([]string(nil), allowedTools...),
-		cliBin:           cliBin,
-		cliExtraArgs:     append([]string(nil), cliExtraArgs...),
-		url:              url,
-		workDir:          workDir,
-		model:            model,
-		effort:           effort,
-		mode:             spec.Key,
-		baseURL:          baseURL,
-		modelProvider:    modelProvider,
-		extraEnv:         append([]string(nil), extraEnv...),
-		codexHome:        strings.TrimSpace(codexHome),
-		promptPreamble:   buildCodexPromptPreamble(systemPrompt, appendPrompt),
-		developerPrompt:  developerPrompt,
-		events:           make(chan core.Event, 128),
-		ctx:              sessionCtx,
-		cancel:           cancel,
-		pending:          make(map[int64]chan rpcResponseEnvelope),
-		pendingApprovals: make(map[string]chan core.PermissionResult),
-		preambleSent:     resumeID != "" && resumeID != core.ContinueSession,
+		allowedTools:      append([]string(nil), allowedTools...),
+		cliBin:            cliBin,
+		cliExtraArgs:      append([]string(nil), cliExtraArgs...),
+		url:               url,
+		workDir:           workDir,
+		model:             model,
+		effort:            effort,
+		mode:              spec.Key,
+		permissionProfile: permissionProfile,
+		baseURL:           baseURL,
+		modelProvider:     modelProvider,
+		extraEnv:          append([]string(nil), extraEnv...),
+		codexHome:         strings.TrimSpace(codexHome),
+		promptPreamble:    buildCodexPromptPreamble(systemPrompt, appendPrompt),
+		developerPrompt:   developerPrompt,
+		events:            make(chan core.Event, 128),
+		ctx:               sessionCtx,
+		cancel:            cancel,
+		pending:           make(map[int64]chan rpcResponseEnvelope),
+		pendingApprovals:  make(map[string]chan core.PermissionResult),
+		preambleSent:      resumeID != "" && resumeID != core.ContinueSession,
 	}
 	s.alive.Store(true)
 
@@ -381,6 +392,7 @@ func (s *appServerSession) initialize() error {
 	return nil
 }
 
+// ensureThread starts or resumes a thread and checks that its configured permission profile took effect.
 func (s *appServerSession) ensureThread(resumeID string) error {
 	s.runtimeMu.RLock()
 	mode := s.mode
@@ -402,6 +414,9 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 		}
 		resp.logEffectivePermissions("thread/resume", spec)
 		s.applyThreadSandbox(resp.appServerPermissionState)
+		if err := s.validatePermissionProfile(resp.appServerPermissionState); err != nil {
+			return err
+		}
 		s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 		s.threadID.Store(resp.Thread.ID)
 		slog.Info("codex app-server thread resumed", "thread_id", resp.Thread.ID)
@@ -417,12 +432,35 @@ func (s *appServerSession) ensureThread(resumeID string) error {
 	}
 	resp.logEffectivePermissions("thread/start", spec)
 	s.applyThreadSandbox(resp.appServerPermissionState)
+	if err := s.validatePermissionProfile(resp.appServerPermissionState); err != nil {
+		return err
+	}
 	s.applyThreadRuntimeState(resp.Cwd, resp.Model, resp.ReasoningEffort)
 	s.threadID.Store(resp.Thread.ID)
 	slog.Info("codex app-server thread started", "thread_id", resp.Thread.ID)
 	return nil
 }
 
+// validatePermissionProfile rejects ignored or replaced profiles, including older servers that do not support the field.
+func (s *appServerSession) validatePermissionProfile(state appServerPermissionState) error {
+	if s.permissionProfile == "" {
+		return nil
+	}
+	raw := state.ActivePermissionProfile
+	if len(raw) == 0 || string(raw) == "null" {
+		return fmt.Errorf("codex app-server: permission profile %q was not confirmed; use a Codex version supporting named permission profiles", s.permissionProfile)
+	}
+	var active appServerActivePermissionProfile
+	if err := json.Unmarshal(raw, &active); err != nil {
+		return fmt.Errorf("codex app-server: decode active permission profile: %w", err)
+	}
+	if active.ID != s.permissionProfile {
+		return fmt.Errorf("codex app-server: requested permission profile %q, received %q", s.permissionProfile, active.ID)
+	}
+	return nil
+}
+
+// threadRequestParams selects either named permissions or a legacy sandbox, never both.
 func (s *appServerSession) threadRequestParams(spec codexModeSpec) map[string]any {
 	params := map[string]any{
 		"experimentalRawEvents":  false,
@@ -432,8 +470,12 @@ func (s *appServerSession) threadRequestParams(spec codexModeSpec) map[string]an
 		params["model"] = model
 	}
 	params["approvalPolicy"] = spec.ApprovalPolicy
-	params["sandbox"] = spec.Sandbox
 	params["approvalsReviewer"] = spec.Reviewer
+	if s.permissionProfile != "" {
+		params["permissions"] = s.permissionProfile
+	} else if spec.Sandbox != "" {
+		params["sandbox"] = spec.Sandbox
+	}
 	return params
 }
 

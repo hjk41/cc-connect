@@ -32,21 +32,22 @@ func init() {
 //   - "plan":     --mode plan (read-only analysis)
 //   - "ask":      --mode ask (Q&A style, read-only)
 type Agent struct {
-	allowedTools    []string
-	workDir         string
-	model           string
-	modelPinned     bool // SetModel overrides the active provider default
-	reasoningEffort string
-	mode            string
-	cmd             string   // CLI binary name, default "agent"
-	cliExtraArgs    []string // extra args from cmd after the binary name
-	configEnv       []string // env vars from [projects.agent.options.env]
-	providers       []core.ProviderConfig
-	activeIdx       int
-	sessionEnv      []string
-	modelsCache     []core.ModelOption
-	modelsGen       uint64 // bumped when CLI identity/config changes
-	mu              sync.RWMutex
+	allowedTools     []string
+	instructionsFile string
+	workDir          string
+	model            string
+	modelPinned      bool // SetModel overrides the active provider default
+	reasoningEffort  string
+	mode             string
+	cmd              string   // CLI binary name, default "agent"
+	cliExtraArgs     []string // extra args from cmd after the binary name
+	configEnv        []string // env vars from [projects.agent.options.env]
+	providers        []core.ProviderConfig
+	activeIdx        int
+	sessionEnv       []string
+	modelsCache      []core.ModelOption
+	modelsGen        uint64 // bumped when CLI identity/config changes
+	mu               sync.RWMutex
 }
 
 func New(opts map[string]any) (core.Agent, error) {
@@ -54,6 +55,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	if workDir == "" {
 		workDir = "."
 	}
+	instructionsFile, _ := opts["instructions_file"].(string)
 	model, _ := opts["model"].(string)
 	effort, _ := opts["reasoning_effort"].(string)
 	mode, _ := opts["mode"].(string)
@@ -64,15 +66,16 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	return &Agent{
-		allowedTools:    toolallowlist.Parse(opts["allowed_tools"]),
-		workDir:         workDir,
-		model:           model,
-		reasoningEffort: normalizeCursorEffort(effort),
-		mode:            mode,
-		cmd:             cmd,
-		cliExtraArgs:    extraArgs,
-		configEnv:       core.ParseConfigEnv(opts),
-		activeIdx:       -1,
+		allowedTools:     toolallowlist.Parse(opts["allowed_tools"]),
+		instructionsFile: instructionsFile,
+		workDir:          workDir,
+		model:            model,
+		reasoningEffort:  normalizeCursorEffort(effort),
+		mode:             mode,
+		cmd:              cmd,
+		cliExtraArgs:     extraArgs,
+		configEnv:        core.ParseConfigEnv(opts),
+		activeIdx:        -1,
 	}, nil
 }
 
@@ -145,12 +148,13 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	cmd := a.cmd
 	extraArgs := append([]string{}, a.cliExtraArgs...)
 	workDir := a.workDir
+	instructionsFile := a.instructionsFile
 	extraEnv := append([]string(nil), a.configEnv...)
 	extraEnv = append(extraEnv, a.providerEnvLocked()...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
 
-	return newCursorSession(ctx, cmd, extraArgs, workDir, a.launchModel(ctx), mode, sessionID, extraEnv, allowedTools)
+	return newCursorSession(ctx, cmd, extraArgs, workDir, a.launchModel(ctx), mode, sessionID, extraEnv, allowedTools, instructionsFile)
 }
 
 var _ core.ResumeReasoningApplier = (*Agent)(nil)
