@@ -283,7 +283,11 @@ func (a *Agent) availableModels(ctx context.Context) ([]core.ModelOption, bool) 
 	env := append([]string(nil), a.configEnv...)
 	env = append(env, a.providerEnvLocked()...)
 	env = append(env, a.sessionEnv...)
+	minimaxModels := core.GetMiniMaxProviderModels(a.providers, a.activeIdx)
 	a.mu.RUnlock()
+	if len(minimaxModels) > 0 {
+		return minimaxModels, true
+	}
 	if codexHome == "" {
 		codexHome = getenvFromList(env, "CODEX_HOME")
 	}
