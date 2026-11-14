@@ -218,6 +218,9 @@ func (a *Agent) SkillDirs() []string {
 	return dirs
 }
 
+// The MemoryFileProvider implementation lives in session_admin.go, where it
+// resolves the workspace through EvalSymlinks like the other Cursor paths.
+
 // ── ContextCompressor implementation ──────────────────────────
 
 func (a *Agent) CompressCommand() string { return "" }
