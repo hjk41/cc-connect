@@ -37,11 +37,18 @@ func (p *Platform) SetReplyAllChats(chatIDs string) error {
 	return nil
 }
 
+// repliesToAllInChat reports whether unmentioned group messages from chatID
+// bypass the @mention gate. It combines the runtime-managed reply_all_chats
+// list with the configured group_reply_all / group_reply_all_chats options;
+// a non-empty group_reply_all_chats still overrides group_reply_all.
 func (p *Platform) repliesToAllInChat(chatID string) bool {
-	chats, allGroups := p.ReplyAllChats()
-	if allGroups {
-		return true
-	}
+	return p.inReplyAllChats(chatID) || p.groupReplyAllForChat(chatID)
+}
+
+// inReplyAllChats reports whether chatID is explicitly listed in
+// reply_all_chats, independent of the group_reply_all switches.
+func (p *Platform) inReplyAllChats(chatID string) bool {
+	chats, _ := p.ReplyAllChats()
 	for _, id := range strings.Split(chats, ",") {
 		if id != "" && id == chatID {
 			return true
