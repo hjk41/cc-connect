@@ -19,6 +19,9 @@ func TestGetSessionHistory_LastMessagesAndUserQuery(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	prev := cursorUserHomeDir
+	cursorUserHomeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { cursorUserHomeDir = prev })
 
 	workDir := filepath.Join(home, "project")
 	if err := os.MkdirAll(workDir, 0o755); err != nil {
@@ -90,6 +93,9 @@ func TestGetSessionHistory_MissingSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", "")
+	prev := cursorUserHomeDir
+	cursorUserHomeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { cursorUserHomeDir = prev })
 
 	a := &Agent{workDir: filepath.Join(home, "project")}
 	_, err := a.GetSessionHistory(t.Context(), "missing-session", 10)
