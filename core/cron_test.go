@@ -1022,11 +1022,16 @@ func TestCronScheduler_SleepRecovery_PastDueFiresImmediately(t *testing.T) {
 	cs.signalWakeUp()
 
 	// Should fire within maxCronTimerSpan (30s) of the wake-up signal,
-	// not 8 hours from now (the naive pre-fix behavior).
+	// not 8 hours from now (the naive pre-fix behavior). Wait on the
+	// persisted run status rather than a send-count baseline: the job
+	// can fire before a baseline sampled after the signal is taken,
+	// which made this test flake under CI load.
 	deadline := time.Now().Add(maxCronTimerSpan + 5*time.Second)
-	startSent := len(platform.getSent())
 	for time.Now().Before(deadline) {
-		if len(platform.getSent()) > startSent+1 {
+		if found, lastRunSet, lastErr := cronJobRunStatus(store, job.ID); found && lastRunSet {
+			if lastErr != "" {
+				t.Fatalf("past-due job fired but failed: %s", lastErr)
+			}
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
