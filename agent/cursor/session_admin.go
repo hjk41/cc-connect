@@ -354,28 +354,60 @@ func (a *Agent) readHistory(ctx context.Context, sessionDir string, limit int) (
 
 func historyEntryFromBlob(raw []byte) (core.HistoryEntry, bool) {
 	var msg struct {
-		Role    string `json:"role"`
-		Content any    `json:"content"`
+		Role      string          `json:"role"`
+		Content   any             `json:"content"`
+		CreatedAt json.RawMessage `json:"createdAt"`
+		Timestamp json.RawMessage `json:"timestamp"`
 	}
 	if json.Unmarshal(raw, &msg) != nil {
 		return core.HistoryEntry{}, false
 	}
+	ts := cursorBlobTime(msg.CreatedAt, msg.Timestamp)
 	switch msg.Role {
 	case "user":
 		text := historyUserText(msg.Content)
 		if strings.TrimSpace(text) == "" {
 			return core.HistoryEntry{}, false
 		}
-		return core.HistoryEntry{Role: "user", Content: text}, true
+		return core.HistoryEntry{Role: "user", Content: text, Timestamp: ts}, true
 	case "assistant":
 		text := assistantHistoryText(msg.Content)
 		if strings.TrimSpace(text) == "" {
 			return core.HistoryEntry{}, false
 		}
-		return core.HistoryEntry{Role: "assistant", Content: text}, true
+		return core.HistoryEntry{Role: "assistant", Content: text, Timestamp: ts}, true
 	default:
 		return core.HistoryEntry{}, false
 	}
+}
+
+// cursorBlobTime parses the first usable createdAt/timestamp field. Cursor
+// stores these either as an RFC3339Nano string or as a unix epoch number
+// (seconds or milliseconds depending on the CLI version).
+func cursorBlobTime(fields ...json.RawMessage) time.Time {
+	for _, raw := range fields {
+		raw = json.RawMessage(strings.TrimSpace(string(raw)))
+		if len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var text string
+		if json.Unmarshal(raw, &text) == nil {
+			if ts, err := time.Parse(time.RFC3339Nano, text); err == nil {
+				return ts.Local()
+			}
+			continue
+		}
+		var n float64
+		if json.Unmarshal(raw, &n) != nil || n <= 0 {
+			continue
+		}
+		sec := int64(n)
+		if sec > 1_000_000_000_000 {
+			return time.UnixMilli(sec).Local()
+		}
+		return time.Unix(sec, 0).Local()
+	}
+	return time.Time{}
 }
 
 // historyUserText keeps <user_query> bodies, including internal newlines.
