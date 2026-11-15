@@ -2099,10 +2099,9 @@ func (e *Engine) executeTimerShell(p Platform, replyCtx any, job *TimerJob) erro
 			msg = fmt.Sprintf("⏰ ⚠️ timeout: `%s`\n\n%s", cmdLabel, truncateStr(output, 3000))
 		}
 		if useUpdate {
-			_ = updaterFor(p).UpdateMessage(e.ctx, previewHandle, msg)
-		} else {
-			e.send(p, replyCtx, msg)
+			_ = updaterFor(p).UpdateMessage(e.ctx, previewHandle, fmt.Sprintf("⏰ ⚠️ timeout: `%s`", cmdLabel))
 		}
+		e.send(p, replyCtx, msg)
 		return fmt.Errorf("shell command timed out")
 	}
 }
@@ -2278,10 +2277,9 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 			msg = fmt.Sprintf("⏰ ⚠️ timeout: `%s`\n\n%s", cmdLabel, truncateStr(output, 3000))
 		}
 		if useUpdate {
-			_ = updaterFor(p).UpdateMessage(e.ctx, previewHandle, msg)
-		} else {
-			e.send(p, replyCtx, msg)
+			_ = updaterFor(p).UpdateMessage(e.ctx, previewHandle, fmt.Sprintf("⏰ ⚠️ timeout: `%s`", cmdLabel))
 		}
+		e.send(p, replyCtx, msg)
 		return fmt.Errorf("shell command timed out")
 	}
 }
@@ -2294,6 +2292,10 @@ func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sy
 	exitOK := cmd.ProcessState.ExitCode() == 0
 
 	var finalMsg string
+	icon := "✅"
+	if !exitOK {
+		icon = "❌"
+	}
 	if exitOK {
 		result := strings.TrimSpace(output)
 		if result == "" {
@@ -2312,7 +2314,8 @@ func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sy
 	if len(opts) >= 2 {
 		if useUpdate, ok := opts[0].(bool); ok && useUpdate {
 			if handle := opts[1]; handle != nil {
-				_ = updaterFor(p).UpdateMessage(e.ctx, handle, finalMsg)
+				_ = updaterFor(p).UpdateMessage(e.ctx, handle, fmt.Sprintf("⏰ %s `%s`", icon, cmdLabel))
+				e.send(p, replyCtx, finalMsg)
 				if !exitOK {
 					return fmt.Errorf("shell: exit code %d", cmd.ProcessState.ExitCode())
 				}

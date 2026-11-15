@@ -14526,6 +14526,98 @@ func TestExecuteCronJob_WorkspacePrefixedSessionKey(t *testing.T) {
 	}
 }
 
+// stubCronShellPlatform records preview-card activity (SendPreviewStart /
+// UpdateMessage) alongside normal sends, so tests can assert that exec cron
+// jobs deliver their result as a separate message instead of only patching
+// the progress card.
+type stubCronShellPlatform struct {
+	stubPlatformEngine
+	previewMu     sync.Mutex
+	previewStarts []string
+	previewEdits  []string
+}
+
+func (p *stubCronShellPlatform) ReconstructReplyCtx(string) (any, error) {
+	return "rctx", nil
+}
+
+func (p *stubCronShellPlatform) SendPreviewStart(_ context.Context, _ any, content string) (any, error) {
+	p.previewMu.Lock()
+	defer p.previewMu.Unlock()
+	p.previewStarts = append(p.previewStarts, content)
+	return "handle", nil
+}
+
+func (p *stubCronShellPlatform) UpdateMessage(_ context.Context, _ any, content string) error {
+	p.previewMu.Lock()
+	defer p.previewMu.Unlock()
+	p.previewEdits = append(p.previewEdits, content)
+	return nil
+}
+
+func (p *stubCronShellPlatform) previewSnapshot() (starts, edits []string) {
+	p.previewMu.Lock()
+	defer p.previewMu.Unlock()
+	return append([]string(nil), p.previewStarts...), append([]string(nil), p.previewEdits...)
+}
+
+// TestExecuteCronJob_ShellResultSentAsNewMessage is a regression test for the
+// exec-cron delivery gap: the run used to patch the progress card with the
+// final output and send no separate message, so on platforms where the card
+// update is the only artifact the completion result never visibly arrived.
+// The fix collapses the progress card to a compact terminal status and sends
+// the full result as a new message.
+func TestExecuteCronJob_ShellResultSentAsNewMessage(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewCronStore(dir)
+	if err != nil {
+		t.Fatalf("NewCronStore() error = %v", err)
+	}
+	scheduler := NewCronScheduler(store)
+
+	platform := &stubCronShellPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+	}
+	agent := &resultAgent{session: newResultAgentSession("unused")}
+
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+	e.cronScheduler = scheduler
+
+	job := &CronJob{
+		ID:          "job-shell",
+		SessionKey:  "feishu:chat-1:user-1",
+		Exec:        "sleep 1; echo shell-result",
+		Description: "shell job",
+	}
+	if err := store.Add(job); err != nil {
+		t.Fatalf("store.Add() error = %v", err)
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+
+	sent := platform.getSent()
+	if len(sent) != 2 {
+		t.Fatalf("sent messages = %d, want 2 (start notice + separate result), got %v", len(sent), sent)
+	}
+	if sent[0] != "⏰ shell job" {
+		t.Fatalf("sent[0] = %q, want cron start notice", sent[0])
+	}
+	if !strings.Contains(sent[1], "shell-result") || !strings.Contains(sent[1], "✅") {
+		t.Fatalf("sent[1] = %q, want separate result message containing command output", sent[1])
+	}
+
+	starts, edits := platform.previewSnapshot()
+	if len(starts) != 1 {
+		t.Fatalf("preview starts = %d, want 1", len(starts))
+	}
+	last := edits[len(edits)-1]
+	if last != "⏰ ✅ `sleep 1; echo shell-result`" {
+		t.Fatalf("last preview edit = %q, want compact terminal status without output", last)
+	}
+}
+
 func TestExecuteCronJob_ExpandsSlashSkillPrompt(t *testing.T) {
 	tests := []struct {
 		name          string
