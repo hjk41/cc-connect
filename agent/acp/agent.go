@@ -117,6 +117,13 @@ type Agent struct {
 	modelsMu           sync.RWMutex
 	cachedModelOptions []core.ModelOption
 	lastReportedModel  string
+
+	// modelsProbeMu serializes the one-shot AvailableModels probe that
+	// runs before any session has advertised model options. modelsProbed
+	// marks it attempted so a failed probe does not re-run on every
+	// /model call.
+	modelsProbeMu      sync.Mutex
+	modelsProbed       bool
 	lastThoughtLevel   string
 	thoughtLevelValues []string
 

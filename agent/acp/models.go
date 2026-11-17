@@ -2,7 +2,9 @@ package acp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -46,20 +48,73 @@ func (a *Agent) GetModel() string {
 }
 
 // AvailableModels prefers options advertised by the latest session,
-// then the configured "models" option, then an empty list.
-func (a *Agent) AvailableModels(_ context.Context) []core.ModelOption {
-	a.modelsMu.RLock()
-	cached := append([]core.ModelOption(nil), a.cachedModelOptions...)
-	a.modelsMu.RUnlock()
-	if len(cached) > 0 {
+// then the configured "models" option, then a one-shot probe. Agents
+// like droid only reveal their model catalog inside session/new, so
+// without a session (or configured list) /model would show an empty
+// list until the user sent a first message. The probe spawns a
+// throwaway session in a temp dir once per agent lifetime and caches
+// the result, mirroring agent/dsh.
+func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
+	if cached := a.cachedModelOptionsSnapshot(); len(cached) > 0 {
 		return cached
 	}
 	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if len(a.configuredModels) == 0 {
+	configured := append([]core.ModelOption(nil), a.configuredModels...)
+	a.mu.RUnlock()
+	if len(configured) > 0 {
+		return configured
+	}
+	return a.probeAvailableModels(ctx)
+}
+
+func (a *Agent) cachedModelOptionsSnapshot() []core.ModelOption {
+	a.modelsMu.RLock()
+	defer a.modelsMu.RUnlock()
+	return append([]core.ModelOption(nil), a.cachedModelOptions...)
+}
+
+func (a *Agent) probeAvailableModels(ctx context.Context) []core.ModelOption {
+	a.modelsProbeMu.Lock()
+	defer a.modelsProbeMu.Unlock()
+	// A concurrent probe or a session that started while we waited may
+	// have filled the cache already.
+	if cached := a.cachedModelOptionsSnapshot(); len(cached) > 0 {
+		return cached
+	}
+	if a.modelsProbed {
 		return nil
 	}
-	return append([]core.ModelOption(nil), a.configuredModels...)
+	a.modelsProbed = true
+
+	dir, err := os.MkdirTemp("", "cc-connect-acp-model-probe-")
+	if err != nil {
+		slog.Warn("acp: model probe workspace", "error", err)
+		return nil
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, listSessionsProbeTimeout)
+	defer cancel()
+
+	id, current, models, err := a.ProbeModelOptions(probeCtx, dir)
+	if id != "" {
+		// Best effort: agents without sessionCapabilities.delete keep
+		// the closed session in their list; noteCapabilities made the
+		// unsupported case cheap.
+		if delErr := a.DeleteSession(context.Background(), id); delErr != nil &&
+			!errors.Is(delErr, errACPDeleteUnsupported) {
+			slog.Debug("acp: model probe session was not removed", "session_id", id, "error", delErr)
+		}
+	}
+	if err != nil {
+		slog.Warn("acp: model probe failed", "error", err)
+		return nil
+	}
+	a.reportModelOptions(current, models)
+	return a.cachedModelOptionsSnapshot()
 }
 
 // parseConfiguredModels accepts the same shapes cc-connect already uses

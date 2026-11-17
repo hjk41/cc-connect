@@ -75,7 +75,7 @@ func (a *Agent) probeModelCatalog(ctx context.Context) []core.ModelOption {
 	a.excludeProbe(dir, "")
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	id, models, err := a.Agent.ProbeModelOptions(probeCtx, dir)
+	id, _, models, err := a.Agent.ProbeModelOptions(probeCtx, dir)
 	if id != "" {
 		a.excludeProbe(dir, id)
 		if delErr := a.DeleteSession(context.Background(), id); delErr != nil {
