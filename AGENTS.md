@@ -276,3 +276,21 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 6. Optionally implement `AgentDoctorInfo` for `cc-connect doctor` support
 7. Add config example in `config.example.toml`
 8. Add unit tests
+
+## macOS 本机安装与更新（必须遵守）
+
+更新本机 CC-Connect 可执行文件（例如 `~/.cc-connect/bin/cc-connect`）时，**禁止直接覆盖已安装文件，必须先写入全新的临时文件，再用 rename 原子替换**。
+
+macOS 会在内核中缓存与文件对象关联的代码签名信息。原地覆盖可能保留旧 inode，使新内容与旧缓存不匹配，导致磁盘签名校验通过但执行仍被 `SIGKILL`，崩溃原因显示 `Code Signature Invalid` / `OS_REASON_CODESIGNING`。2026-11-16 本机 Devinbot 已实际遇到此故障。
+
+必须遵循以下顺序：
+
+1. 在目标安装目录所在的**同一文件系统**创建全新的临时文件，或临时目录中的新文件。构建或复制只能写入这个临时路径。
+2. 设置正确的执行权限，核对新文件的 SHA256、执行 `codesign --verify`，并用该临时文件运行 `--version` 确认可启动。探针日志应指向本次更新的独立路径。
+3. 备份旧版本；在替换前保留原安装路径，避免先删除旧文件造成服务空窗。
+4. 使用 `rename(2)` / Python `os.replace()` 一次性替换目标路径；使用 `mv` 时必须确保源与目标在同一文件系统，避免退化为跨文件系统复制。
+5. 按当前任务授权恢复对应服务，避免中断其他活跃机器人；核验新进程、平台连接和实际消息收发，不能只凭旧进程仍存活宣布升级成功。
+
+禁止使用 `cp new-binary ~/.cc-connect/bin/cc-connect`、重定向写入、`shutil.copyfile()` 等方式直接写入现有安装文件，也不要直接把已安装路径作为构建输出。允许复制到全新的临时路径；最终安装步骤必须是上述原子替换。
+
+参考：[Apple — Updating Mac Software](https://developer.apple.com/documentation/security/updating-mac-software)。
