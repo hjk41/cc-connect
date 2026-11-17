@@ -125,7 +125,13 @@ func elicitationPropertyOrder(props map[string]elicitationProperty, required []s
 }
 
 func elicitationPropertyToQuestion(prop elicitationProperty) (core.UserQuestion, bool) {
-	q := core.UserQuestion{Question: prop.Title}
+	q := core.UserQuestion{Question: prop.Title, Header: prop.Title}
+	// Devin maps ask_user_question's short header to `title` and the full
+	// question text to `description`; kimi puts the question in `title` and
+	// leaves `description` empty. Prefer the longer form when present.
+	if prop.Description != "" {
+		q.Question = prop.Description
+	}
 	switch prop.Type {
 	case "string":
 		if len(prop.OneOf) == 0 {
@@ -156,17 +162,25 @@ func elicitationEnumOptions(prop elicitationProperty) []elicitationOption {
 	if prop.Type == "array" && prop.Items != nil {
 		raw = prop.Items.AnyOf
 	}
+	// Option shape differs by agent: kimi uses const=value/title=label/
+	// description=hint, while Devin uses const=label/title=description with
+	// no `description` field. Devin-style forms are recognized by the
+	// property-level description carrying the question text.
+	devinStyle := prop.Description != ""
 	opts := make([]elicitationOption, 0, len(raw))
 	for _, o := range raw {
-		label := o.Title
-		if label == "" {
-			label = o.Const
+		opt := elicitationOption{Value: o.Const}
+		if devinStyle {
+			opt.Label = o.Const
+			opt.Description = o.Title
+		} else {
+			opt.Label = o.Title
+			if opt.Label == "" {
+				opt.Label = o.Const
+			}
+			opt.Description = o.Description
 		}
-		opts = append(opts, elicitationOption{
-			Value:       o.Const,
-			Label:       label,
-			Description: o.Description,
-		})
+		opts = append(opts, opt)
 	}
 	return opts
 }

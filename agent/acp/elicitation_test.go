@@ -74,6 +74,107 @@ func TestParseElicitationCreateParams(t *testing.T) {
 	}
 }
 
+// Devin (chisel) ask_user_question → elicitation/create fixture: the short
+// header goes to `title`, the full question text to `description`, and each
+// option's human label to `const` while `title` carries the option
+// description. Bug: before the fix the parser used `title` as the question
+// and option label, so Feishu cards rendered only the header ("部署形态")
+// and long option descriptions — the actual question text was invisible.
+const elicitationCreateDevinFixture = `{
+	"sessionId": "test-session-id",
+	"mode": "form",
+	"message": "short_answer 服务放在哪？",
+	"requestedSchema": {
+		"type": "object",
+		"properties": {
+			"q0": {
+				"type": "string",
+				"title": "部署形态",
+				"description": "short_answer 服务放在哪？",
+				"oneOf": [
+					{"const": "独立 Rust 服务", "title": "新 Fargate 服务，与高 QPS 搜索链路隔离"},
+					{"const": "web-rust 内新模块", "title": "复用进程内 provider，开发最快"},
+					{"const": "独立 Python 服务", "title": ""}
+				]
+			},
+			"q1": {
+				"type": "array",
+				"title": "问题类型",
+				"description": "第一期接受哪些问题类型？",
+				"items": {"anyOf": [
+					{"const": "单一事实值", "title": "一次检索即可回答"},
+					{"const": "是非判断", "title": "回答是/否"}
+				]}
+			}
+		},
+		"required": ["q0", "q1"]
+	}
+}`
+
+func TestParseElicitationCreateParams_DevinQuestionFromDescription(t *testing.T) {
+	st, err := parseElicitationCreateParams(json.RawMessage(elicitationCreateDevinFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Questions) != 2 {
+		t.Fatalf("got %d questions, want 2", len(st.Questions))
+	}
+	q0 := st.Questions[0]
+	if q0.Question.Question != "short_answer 服务放在哪？" {
+		t.Fatalf("q0 question = %q, want full question text, not header", q0.Question.Question)
+	}
+	if q0.Question.Header != "部署形态" {
+		t.Fatalf("q0 header = %q, want 部署形态", q0.Question.Header)
+	}
+	// Devin puts the option label in const and the description in title;
+	// labels must stay the short const text, descriptions the long title.
+	if len(q0.Question.Options) != 3 ||
+		q0.Question.Options[0].Label != "独立 Rust 服务" ||
+		q0.Question.Options[0].Description != "新 Fargate 服务，与高 QPS 搜索链路隔离" {
+		t.Fatalf("q0 options = %+v", q0.Question.Options)
+	}
+	if q0.Question.Options[2].Label != "独立 Python 服务" || q0.Question.Options[2].Description != "" {
+		t.Fatalf("q0 option[2] = %+v, want label 独立 Python 服务 with empty description", q0.Question.Options[2])
+	}
+	q1 := st.Questions[1]
+	if !q1.Question.MultiSelect || q1.Question.Question != "第一期接受哪些问题类型？" {
+		t.Fatalf("q1 = %+v", q1.Question)
+	}
+	if len(q1.Options) != 2 || q1.Options[0].Value != "单一事实值" || q1.Options[0].Label != "单一事实值" {
+		t.Fatalf("q1 wire options = %+v", q1.Options)
+	}
+}
+
+func TestBuildElicitationResponse_devinAccept(t *testing.T) {
+	st, err := parseElicitationCreateParams(json.RawMessage(elicitationCreateDevinFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := buildElicitationResponse(st, core.PermissionResult{
+		Behavior: "allow",
+		UpdatedInput: map[string]any{
+			"answers": map[string]any{
+				"short_answer 服务放在哪？": "独立 Rust 服务",
+				"第一期接受哪些问题类型？":        "是非判断, 单一事实值",
+			},
+		},
+	})
+	if res["action"] != "accept" {
+		t.Fatalf("action = %v, want accept", res["action"])
+	}
+	content, ok := res["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("content missing: %v", res)
+	}
+	if content["q0"] != "独立 Rust 服务" {
+		t.Fatalf("q0 = %v, want 独立 Rust 服务", content["q0"])
+	}
+	picked, ok := content["q1"].([]string)
+	if !ok || len(picked) != 2 || picked[0] != "单一事实值" || picked[1] != "是非判断" {
+		t.Fatalf("q1 = %v, want declared-order [单一事实值 是非判断]", content["q1"])
+	}
+}
+
 func TestParseElicitationCreateParams_rejectsNonFormMode(t *testing.T) {
 	params := json.RawMessage(`{"mode": "url", "message": "m", "requestedSchema": {"properties": {"q0": {"type": "string"}}}}`)
 	if _, err := parseElicitationCreateParams(params); err == nil {

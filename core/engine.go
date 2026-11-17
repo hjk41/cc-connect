@@ -12869,6 +12869,9 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 	if supportsCards(p) {
 		cb := NewCard().Title(e.i18n.T(MsgAskQuestionTitle)+titleSuffix, "blue")
 		body := "**" + q.Question + "**"
+		if q.Header != "" && q.Header != q.Question {
+			body = "*" + q.Header + "*\n\n" + body
+		}
 		if q.MultiSelect {
 			// For multiSelect, buttons would resolve on the first click and prevent
 			// selecting multiple options. Render options as a numbered text list
@@ -12924,6 +12927,11 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 	// Try inline buttons (Telegram)
 	if bs, ok := p.(InlineButtonSender); ok {
 		var textBuf strings.Builder
+		if q.Header != "" && q.Header != q.Question {
+			textBuf.WriteString("*")
+			textBuf.WriteString(q.Header)
+			textBuf.WriteString("*\n")
+		}
 		textBuf.WriteString("❓ *")
 		textBuf.WriteString(q.Question)
 		textBuf.WriteString("*")
@@ -12964,6 +12972,11 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 
 	// Plain text fallback
 	var sb strings.Builder
+	if q.Header != "" && q.Header != q.Question {
+		sb.WriteString("*")
+		sb.WriteString(q.Header)
+		sb.WriteString("*\n")
+	}
 	sb.WriteString("❓ **")
 	sb.WriteString(q.Question)
 	sb.WriteString("**")
