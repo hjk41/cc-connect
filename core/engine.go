@@ -3332,7 +3332,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			// and the queue append. Re-try TryLock — if it succeeds, no one is
 			// draining the queue so we must start a processor ourselves.
 			if g, ok := session.TryLock(); ok {
-				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, resolvedWorkspace, g)
+				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, g)
 			}
 			return
 		}
@@ -3572,7 +3572,7 @@ func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, reply
 // has already exited. It processes all pending messages in the state, similar
 // to the drain loop in processInteractiveMessageWith but as a standalone
 // goroutine.
-func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, interactiveKey string, agent Agent, workspaceDir string, lockGen uint64) {
+func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, interactiveKey string, agent Agent, lockGen uint64) {
 	unlocked := false
 	defer func() {
 		if !unlocked {
@@ -3592,18 +3592,11 @@ func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, 
 	}
 
 	// Stop unsolicited reader before draining — drainPendingMessages reads
-	// from Events() and we must not have concurrent readers.
+	// from Events() and we must not have concurrent readers. The drain re-arms
+	// the reader itself when the queue empties, just before unlocking.
 	e.stopUnsolicitedReader(state)
 
 	unlocked = e.drainPendingMessages(state, session, sessions, interactiveKey, lockGen)
-
-	// Restart unsolicited reader if the session is still alive and clean.
-	state.mu.Lock()
-	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
-	state.mu.Unlock()
-	if alive {
-		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
-	}
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -4226,22 +4219,22 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
 
-	// Start unsolicited reader and arm the idle close timer BEFORE draining
-	// queued messages. drainPendingMessages releases the session lock, and
-	// without this ordering the next user message can race in, call
+	// Arm the idle close timer BEFORE draining queued messages.
+	// drainPendingMessages releases the session lock, and without this
+	// ordering the next user message can race in, call
 	// cancelAgentSessionIdleClose (a no-op since nothing was scheduled yet),
 	// and then the late schedule below arms a timer that no subsequent cancel
 	// will catch — closing the live session mid-turn. See #1686 P1-C P1-2.
 	// The schedule's own state checks (agentSession nil, stopped, etc.) and
 	// cleanupInteractiveStateForIdleToken's stale-token guard make it safe to
 	// leave a scheduled timer running across drain.
-	state.mu.Lock()
-	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
-	state.mu.Unlock()
-	if alive {
-		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
-		e.scheduleAgentSessionIdleClose(interactiveKey, state)
-	}
+	//
+	// The unsolicited reader is NOT armed here: drainPendingMessages arms it
+	// itself when the queue drains to empty, right before unlocking. Arming
+	// it before the drain would let it race the drain loop and steal a queued
+	// turn's EventResult, hanging the drain and orphaning the rest of the
+	// queue.
+	e.scheduleAgentSessionIdleClose(interactiveKey, state)
 
 	// Guard against a narrow race: a message may have been queued between
 	// processInteractiveEvents observing an empty queue and returning here
@@ -5143,12 +5136,18 @@ func (e *Engine) startUnsolicitedReader(state *interactiveState, session *Sessio
 	// Ensure no previous reader is still running.
 	e.stopUnsolicitedReader(state)
 
-	// Capture the agent session under lock. cleanupInteractiveState may nil
-	// state.agentSession concurrently, so reading it inside the goroutine
-	// without synchronisation is a data race.
 	state.mu.Lock()
-	agentSession := state.agentSession
+	e.startUnsolicitedReaderLocked(state, session, sessions, sessionKey, workspaceDir)
 	state.mu.Unlock()
+}
+
+// startUnsolicitedReaderLocked arms the unsolicited reader. The caller must
+// hold state.mu and must have already stopped any previous reader. Capturing
+// agentSession under the lock matters because cleanupInteractiveState may nil
+// state.agentSession concurrently — reading it inside the goroutine without
+// synchronisation is a data race.
+func (e *Engine) startUnsolicitedReaderLocked(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, workspaceDir string) {
+	agentSession := state.agentSession
 	if agentSession == nil {
 		return
 	}
@@ -5157,11 +5156,9 @@ func (e *Engine) startUnsolicitedReader(state *interactiveState, session *Sessio
 	done := make(chan struct{})
 	flushDone := make(chan struct{})
 
-	state.mu.Lock()
 	state.unsolicitedCancel = cancel
 	state.unsolicitedDone = done
 	state.unsolicitedFlushDone = flushDone
-	state.mu.Unlock()
 
 	go e.runUnsolicitedReader(ctx, cancel, done, flushDone, state, agentSession, session, sessions, sessionKey, workspaceDir)
 }
@@ -7144,26 +7141,10 @@ func (e *Engine) notifyDroppedQueuedMessages(state *interactiveState, reason err
 // state.mu) to close the race window between "queue empty" and "session unlocked".
 // Returns true if the session was unlocked by this call.
 func (e *Engine) drainPendingMessages(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, lockGen uint64) bool {
-	// This loop reads from Events(), so the unsolicited reader must not run
-	// concurrently: it can steal a queued turn's EventResult and leave this
-	// drain waiting forever, orphaning the rest of the queue. The turn-end
-	// path arms the reader before calling us, so stop it here and restart
-	// it on exit while the session is still alive and clean — the same
-	// contract drainOrphanedQueue already uses.
-	e.stopUnsolicitedReader(state)
-	defer func() {
-		state.mu.Lock()
-		alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
-		workspaceDir := state.workspaceDir
-		state.mu.Unlock()
-		if alive {
-			e.startUnsolicitedReader(state, session, sessions, sessionKey, workspaceDir)
-		}
-	}()
-
 	for {
 		state.mu.Lock()
 		if len(state.pendingMessages) == 0 {
+			e.armUnsolicitedReaderForIdleLocked(state, session, sessions, sessionKey)
 			session.Unlock(lockGen)
 			state.mu.Unlock()
 			return true
@@ -7180,6 +7161,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			)
 		}
 		if len(state.pendingMessages) == 0 {
+			e.armUnsolicitedReaderForIdleLocked(state, session, sessions, sessionKey)
 			session.Unlock(lockGen)
 			state.mu.Unlock()
 			return true
@@ -7225,6 +7207,29 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 
 		slog.Info("processing queued message", "session", sessionKey)
 		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx, lockGen)
+	}
+}
+
+// armUnsolicitedReaderForIdleLocked arms the unsolicited event reader when the
+// session is going idle. The caller must hold state.mu and must call this while
+// still holding the session lock, just before session.Unlock. Both orderings
+// are load-bearing:
+//
+//   - Holding state.mu through session.Unlock keeps the "queue empty" check
+//     atomic: a racing message can only append to pendingMessages after the
+//     unlock, at which point its own TryLock succeeds and it drains.
+//   - Arming while the session lock is held guarantees no foreground turn can
+//     interleave: any new turn must acquire the lock first and always calls
+//     stopUnsolicitedReader before its Send, so the reader can never consume
+//     a turn's events. Arming before the drain instead would let the reader
+//     race the drain loop and steal a queued turn's EventResult, hanging the
+//     drain and orphaning the rest of the queue.
+//
+// Callers must have stopped any previous reader before reaching this point.
+func (e *Engine) armUnsolicitedReaderForIdleLocked(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string) {
+	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
+	if alive {
+		e.startUnsolicitedReaderLocked(state, session, sessions, sessionKey, state.workspaceDir)
 	}
 }
 

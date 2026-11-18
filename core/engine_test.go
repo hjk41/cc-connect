@@ -10216,7 +10216,7 @@ func TestDrainOrphanedQueue_UsesWorkspaceSessionManager(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		e.drainOrphanedQueue(session, wsSessions, key, agent, "", 0)
+		e.drainOrphanedQueue(session, wsSessions, key, agent, 0)
 		close(done)
 	}()
 
