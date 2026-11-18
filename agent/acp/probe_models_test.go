@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestHelperProcessACPModelProbe re-execs the test binary as a fake ACP
@@ -82,10 +83,12 @@ func TestAvailableModels_ProbesBeforeFirstSession(t *testing.T) {
 	}
 }
 
-// TestAvailableModels_ProbeNotRetriedOnFailure ensures a failed probe is
+// TestAvailableModels_ProbeFailureCooldown ensures a failed probe is
 // not retried on every /model call (each retry would respawn the agent
-// and stall the command for the full timeout).
-func TestAvailableModels_ProbeNotRetriedOnFailure(t *testing.T) {
+// and stall the command for the probe timeout) but IS retried after the
+// cooldown — a permanent no-retry left /model empty forever on a
+// transient spawn failure.
+func TestAvailableModels_ProbeFailureCooldown(t *testing.T) {
 	a := &Agent{
 		cmd:          "definitely-not-a-real-agent",
 		ProbeCommand: "/nonexistent/acp-probe-bin",
@@ -93,8 +96,24 @@ func TestAvailableModels_ProbeNotRetriedOnFailure(t *testing.T) {
 	if got := a.AvailableModels(context.Background()); len(got) != 0 {
 		t.Fatalf("AvailableModels = %v, want empty on probe failure", got)
 	}
-	if !a.modelsProbed {
-		t.Fatal("modelsProbed = false after failed probe, want true")
+	if a.modelsProbeFailedAt.IsZero() {
+		t.Fatal("modelsProbeFailedAt not set after failed probe")
+	}
+	if a.modelsProbed {
+		t.Fatal("modelsProbed = true after failed probe, want false")
+	}
+	// Within the cooldown the next call must not respawn the agent.
+	a.modelsProbeFailedAt = time.Now()
+	before := a.modelsProbeFailedAt
+	_ = a.AvailableModels(context.Background())
+	if !a.modelsProbeFailedAt.Equal(before) {
+		t.Fatal("probe retried inside the cooldown window")
+	}
+	// Past the cooldown the probe must be attempted again.
+	a.modelsProbeFailedAt = time.Now().Add(-modelProbeRetryCooldown - time.Second)
+	_ = a.AvailableModels(context.Background())
+	if time.Since(a.modelsProbeFailedAt) > 10*time.Second {
+		t.Fatal("probe did not retry after the cooldown elapsed")
 	}
 }
 

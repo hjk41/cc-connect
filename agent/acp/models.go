@@ -6,8 +6,18 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
+)
+
+const (
+	// modelProbeTimeout bounds the one-shot AvailableModels probe. It
+	// must exceed a cold agent spawn (droid takes ~4s to answer
+	// session/new); it is not derived from the caller's /model budget.
+	modelProbeTimeout = 8 * time.Second
+	// modelProbeRetryCooldown rate-limits retries after a failed probe.
+	modelProbeRetryCooldown = time.Minute
 )
 
 // SetModel stores the model id applied to future sessions and, when the
@@ -64,7 +74,7 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	if len(configured) > 0 {
 		return configured
 	}
-	return a.probeAvailableModels(ctx)
+	return a.probeAvailableModels()
 }
 
 func (a *Agent) cachedModelOptionsSnapshot() []core.ModelOption {
@@ -73,7 +83,7 @@ func (a *Agent) cachedModelOptionsSnapshot() []core.ModelOption {
 	return append([]core.ModelOption(nil), a.cachedModelOptions...)
 }
 
-func (a *Agent) probeAvailableModels(ctx context.Context) []core.ModelOption {
+func (a *Agent) probeAvailableModels() []core.ModelOption {
 	a.modelsProbeMu.Lock()
 	defer a.modelsProbeMu.Unlock()
 	// A concurrent probe or a session that started while we waited may
@@ -84,7 +94,12 @@ func (a *Agent) probeAvailableModels(ctx context.Context) []core.ModelOption {
 	if a.modelsProbed {
 		return nil
 	}
-	a.modelsProbed = true
+	// A failed probe retries after a cooldown instead of on every
+	// /model call (each retry stalls the command for the probe budget).
+	if !a.modelsProbeFailedAt.IsZero() &&
+		time.Since(a.modelsProbeFailedAt) < modelProbeRetryCooldown {
+		return nil
+	}
 
 	dir, err := os.MkdirTemp("", "cc-connect-acp-model-probe-")
 	if err != nil {
@@ -93,10 +108,12 @@ func (a *Agent) probeAvailableModels(ctx context.Context) []core.ModelOption {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, listSessionsProbeTimeout)
+	// Deliberately not derived from ctx: callers pass the engine's 3-10s
+	// /model fetch budget, which is shorter than a cold agent spawn
+	// (~4s for droid), so every probe timed out and /model stayed
+	// empty. The probe runs once per agent and is cached, so it gets
+	// its own budget.
+	probeCtx, cancel := context.WithTimeout(context.Background(), modelProbeTimeout)
 	defer cancel()
 
 	id, current, models, err := a.ProbeModelOptions(probeCtx, dir)
@@ -110,9 +127,11 @@ func (a *Agent) probeAvailableModels(ctx context.Context) []core.ModelOption {
 		}
 	}
 	if err != nil {
+		a.modelsProbeFailedAt = time.Now()
 		slog.Warn("acp: model probe failed", "error", err)
 		return nil
 	}
+	a.modelsProbed = true
 	a.reportModelOptions(current, models)
 	return a.cachedModelOptionsSnapshot()
 }

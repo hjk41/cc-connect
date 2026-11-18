@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/chenhg5/cc-connect/agent/internal/toolallowlist"
 	"github.com/chenhg5/cc-connect/core"
@@ -120,12 +121,14 @@ type Agent struct {
 
 	// modelsProbeMu serializes the one-shot AvailableModels probe that
 	// runs before any session has advertised model options. modelsProbed
-	// marks it attempted so a failed probe does not re-run on every
-	// /model call.
-	modelsProbeMu      sync.Mutex
-	modelsProbed       bool
-	lastThoughtLevel   string
-	thoughtLevelValues []string
+	// marks a successful probe; modelsProbeFailedAt rate-limits retries
+	// after a failure (a permanent no-retry left /model empty forever
+	// on a transient spawn failure).
+	modelsProbeMu       sync.Mutex
+	modelsProbed        bool
+	modelsProbeFailedAt time.Time
+	lastThoughtLevel    string
+	thoughtLevelValues  []string
 
 	titlesMu sync.RWMutex
 	titles   map[string]string
