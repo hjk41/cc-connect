@@ -402,6 +402,12 @@ type Engine struct {
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
 
+	// stopHookEvent is the hook event emitted when /stop ends an agent turn.
+	// Defaults to HookEventSessionEnded (the historical behavior); set it to
+	// HookEventTurnCancelled to receive the more specific event instead.
+	// See SetStopHookEvent.
+	stopHookEvent atomic.Value // HookEventType
+
 	commands *CommandRegistry
 	skills   *SkillRegistry
 	aliases  map[string]string // trigger → command (e.g. "帮助" → "/help")
@@ -1458,6 +1464,36 @@ func (e *Engine) SetStaleLockBreakAfter(d time.Duration) {
 // 0 disables the timeout entirely.
 func (e *Engine) SetEventIdleTimeout(d time.Duration) {
 	e.eventIdleTimeout = d
+}
+
+// SetStopHookEvent selects which hook event is emitted when /stop ends an
+// agent turn.
+//
+// Historically /stop always emitted "session.ended", because stopping a turn
+// also tore the agent session down. Graceful cancellation (CancelTurn) keeps
+// the session alive, so "turn.cancelled" describes the situation more
+// precisely — but existing hook rules listen for "session.ended", and
+// switching the event name silently would break them.
+//
+// To stay backward compatible the default remains "session.ended"; opt in to
+// "turn.cancelled" explicitly. Unknown values are ignored and leave the
+// current setting untouched.
+func (e *Engine) SetStopHookEvent(ev HookEventType) {
+	switch ev {
+	case HookEventSessionEnded, HookEventTurnCancelled:
+		e.stopHookEvent.Store(ev)
+	default:
+		slog.Warn("ignoring unknown stop hook event", "event", string(ev))
+	}
+}
+
+// stopHookEventType returns the hook event to emit when /stop ends a turn.
+// Falls back to HookEventSessionEnded if nothing was configured.
+func (e *Engine) stopHookEventType() HookEventType {
+	if v, ok := e.stopHookEvent.Load().(HookEventType); ok {
+		return v
+	}
+	return HookEventSessionEnded
 }
 
 // SetMaxQueuedMessages sets the per-session message queue depth.
@@ -3296,7 +3332,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			// and the queue append. Re-try TryLock — if it succeeds, no one is
 			// draining the queue so we must start a processor ourselves.
 			if g, ok := session.TryLock(); ok {
-				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, resolvedWorkspace, g)
+				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, g)
 			}
 			return
 		}
@@ -3536,7 +3572,7 @@ func (e *Engine) ensureInteractiveStateForQueueing(key string, p Platform, reply
 // has already exited. It processes all pending messages in the state, similar
 // to the drain loop in processInteractiveMessageWith but as a standalone
 // goroutine.
-func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, interactiveKey string, agent Agent, workspaceDir string, lockGen uint64) {
+func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, interactiveKey string, agent Agent, lockGen uint64) {
 	unlocked := false
 	defer func() {
 		if !unlocked {
@@ -3556,18 +3592,11 @@ func (e *Engine) drainOrphanedQueue(session *Session, sessions *SessionManager, 
 	}
 
 	// Stop unsolicited reader before draining — drainPendingMessages reads
-	// from Events() and we must not have concurrent readers.
+	// from Events() and we must not have concurrent readers. The drain re-arms
+	// the reader itself when the queue empties, just before unlocking.
 	e.stopUnsolicitedReader(state)
 
 	unlocked = e.drainPendingMessages(state, session, sessions, interactiveKey, lockGen)
-
-	// Restart unsolicited reader if the session is still alive and clean.
-	state.mu.Lock()
-	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
-	state.mu.Unlock()
-	if alive {
-		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
-	}
 }
 
 // ──────────────────────────────────────────────────────────────
@@ -3708,7 +3737,12 @@ found:
 		// More questions remaining — advance to next and send new card
 		if curIdx+1 < len(pending.Questions) {
 			pending.CurrentQuestion = curIdx + 1
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
+			// A card click already had its card replaced in place by the
+			// platform's callback response, so echoing the answer as a chat
+			// message would show the same answer twice.
+			if !msg.CardAnswerRendered {
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
+			}
 			e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, curIdx+1)
 			return true
 		}
@@ -3722,7 +3756,7 @@ found:
 		}); err != nil {
 			slog.Error("failed to send AskUserQuestion response", "error", err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
+		} else if !msg.CardAnswerRendered {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
 		}
 
@@ -4185,22 +4219,22 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	}
 	stopTyping = nil // ownership transferred; prevent defer from double-stopping
 
-	// Start unsolicited reader and arm the idle close timer BEFORE draining
-	// queued messages. drainPendingMessages releases the session lock, and
-	// without this ordering the next user message can race in, call
+	// Arm the idle close timer BEFORE draining queued messages.
+	// drainPendingMessages releases the session lock, and without this
+	// ordering the next user message can race in, call
 	// cancelAgentSessionIdleClose (a no-op since nothing was scheduled yet),
 	// and then the late schedule below arms a timer that no subsequent cancel
 	// will catch — closing the live session mid-turn. See #1686 P1-C P1-2.
 	// The schedule's own state checks (agentSession nil, stopped, etc.) and
 	// cleanupInteractiveStateForIdleToken's stale-token guard make it safe to
 	// leave a scheduled timer running across drain.
-	state.mu.Lock()
-	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
-	state.mu.Unlock()
-	if alive {
-		e.startUnsolicitedReader(state, session, sessions, interactiveKey, workspaceDir)
-		e.scheduleAgentSessionIdleClose(interactiveKey, state)
-	}
+	//
+	// The unsolicited reader is NOT armed here: drainPendingMessages arms it
+	// itself when the queue drains to empty, right before unlocking. Arming
+	// it before the drain would let it race the drain loop and steal a queued
+	// turn's EventResult, hanging the drain and orphaning the rest of the
+	// queue.
+	e.scheduleAgentSessionIdleClose(interactiveKey, state)
 
 	// Guard against a narrow race: a message may have been queued between
 	// processInteractiveEvents observing an empty queue and returning here
@@ -5102,12 +5136,18 @@ func (e *Engine) startUnsolicitedReader(state *interactiveState, session *Sessio
 	// Ensure no previous reader is still running.
 	e.stopUnsolicitedReader(state)
 
-	// Capture the agent session under lock. cleanupInteractiveState may nil
-	// state.agentSession concurrently, so reading it inside the goroutine
-	// without synchronisation is a data race.
 	state.mu.Lock()
-	agentSession := state.agentSession
+	e.startUnsolicitedReaderLocked(state, session, sessions, sessionKey, workspaceDir)
 	state.mu.Unlock()
+}
+
+// startUnsolicitedReaderLocked arms the unsolicited reader. The caller must
+// hold state.mu and must have already stopped any previous reader. Capturing
+// agentSession under the lock matters because cleanupInteractiveState may nil
+// state.agentSession concurrently — reading it inside the goroutine without
+// synchronisation is a data race.
+func (e *Engine) startUnsolicitedReaderLocked(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, workspaceDir string) {
+	agentSession := state.agentSession
 	if agentSession == nil {
 		return
 	}
@@ -5116,11 +5156,9 @@ func (e *Engine) startUnsolicitedReader(state *interactiveState, session *Sessio
 	done := make(chan struct{})
 	flushDone := make(chan struct{})
 
-	state.mu.Lock()
 	state.unsolicitedCancel = cancel
 	state.unsolicitedDone = done
 	state.unsolicitedFlushDone = flushDone
-	state.mu.Unlock()
 
 	go e.runUnsolicitedReader(ctx, cancel, done, flushDone, state, agentSession, session, sessions, sessionKey, workspaceDir)
 }
@@ -7106,6 +7144,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 	for {
 		state.mu.Lock()
 		if len(state.pendingMessages) == 0 {
+			e.armUnsolicitedReaderForIdleLocked(state, session, sessions, sessionKey)
 			session.Unlock(lockGen)
 			state.mu.Unlock()
 			return true
@@ -7122,6 +7161,7 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			)
 		}
 		if len(state.pendingMessages) == 0 {
+			e.armUnsolicitedReaderForIdleLocked(state, session, sessions, sessionKey)
 			session.Unlock(lockGen)
 			state.mu.Unlock()
 			return true
@@ -7167,6 +7207,29 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 
 		slog.Info("processing queued message", "session", sessionKey)
 		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx, lockGen)
+	}
+}
+
+// armUnsolicitedReaderForIdleLocked arms the unsolicited event reader when the
+// session is going idle. The caller must hold state.mu and must call this while
+// still holding the session lock, just before session.Unlock. Both orderings
+// are load-bearing:
+//
+//   - Holding state.mu through session.Unlock keeps the "queue empty" check
+//     atomic: a racing message can only append to pendingMessages after the
+//     unlock, at which point its own TryLock succeeds and it drains.
+//   - Arming while the session lock is held guarantees no foreground turn can
+//     interleave: any new turn must acquire the lock first and always calls
+//     stopUnsolicitedReader before its Send, so the reader can never consume
+//     a turn's events. Arming before the drain instead would let the reader
+//     race the drain loop and steal a queued turn's EventResult, hanging the
+//     drain and orphaning the rest of the queue.
+//
+// Callers must have stopped any previous reader before reaching this point.
+func (e *Engine) armUnsolicitedReaderForIdleLocked(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string) {
+	alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
+	if alive {
+		e.startUnsolicitedReaderLocked(state, session, sessions, sessionKey, state.workspaceDir)
 	}
 }
 
@@ -11239,11 +11302,26 @@ func (e *Engine) cmdCancel(p Platform, msg *Message) {
 
 	slog.Info("cmdCancel: stopping execution and creating new session", "session_key", msg.SessionKey)
 
+	// Capture the live agent session BEFORE stopInteractiveSession so we can
+	// force-close it regardless of which path stopInteractiveSession takes.
+	// When the agent implements AgentSessionCanceller (claudecode after
+	// PR-style fix, ACP, etc.) the canceller branch keeps the subprocess
+	// alive — without this follow-up close, cmdCancel would leak the
+	// subprocess. closeAgentSessionAsync is idempotent with the
+	// normalCleanup path, so the double-close is harmless.
+	savedAgent := e.interactiveStateForCancel(interactiveKey)
+
 	// Stop the current execution (like /stop)
 	stopped := e.stopInteractiveSession(interactiveKey, p, msg.ReplyCtx)
 	if !stopped {
 		// No execution in progress, but still create a new session
 		slog.Debug("cmdCancel: no execution to stop, proceeding with new session", "session_key", msg.SessionKey)
+	}
+
+	// Force-close the captured subprocess in case the canceller path kept
+	// it alive. Idempotent with normalCleanup, which already invoked Close.
+	if savedAgent != nil {
+		e.closeAgentSessionAsync(interactiveKey, savedAgent, p, msg.ReplyCtx)
 	}
 
 	// Clear old session's agent session ID so it cannot be resumed
@@ -11275,6 +11353,14 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	}
 
 	// Stop unsolicited reader before touching state to avoid races.
+	//
+	// This call waits for the reader goroutine, and it runs while interactiveMu
+	// is held, so a stuck reader can stall other sessions for up to
+	// unsolicitedReaderStopTimeout (5s). That bound is deliberate: the reader
+	// must be stopped before the state below is captured, and releasing the
+	// lock to do it would let another goroutine take over this session (the
+	// same double-close hazard cleanupInteractiveState guards against with its
+	// expected-pointer check).
 	e.stopUnsolicitedReader(state)
 
 	state.mu.Lock()
@@ -11285,9 +11371,28 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 	closeReplyCtx := state.replyCtx
 	state.mu.Unlock()
 
-	// If the agent session supports graceful turn cancellation (e.g. ACP),
-	// send a cancel notification and keep the session alive for the next
-	// user message, rather than killing the process and destroying state.
+	// If the agent session supports graceful turn cancellation (e.g. ACP,
+	// claudecode via stream-json control_request interrupt), call CancelTurn
+	// and keep the session alive for the next user message rather than
+	// killing the process and destroying state.
+	//
+	// Release the engine lock BEFORE calling CancelTurn.
+	//
+	// claudecode's CancelTurn now waits for the CLI to confirm the interrupted
+	// turn actually terminated (up to its confirm timeout) — it is a blocking
+	// call, and holding e.interactiveMu across it would stall every other
+	// session's message routing for the duration.
+	//
+	// The old "hold the lock across CancelTurn so the failure path can
+	// fall through to normalCleanup without a double-unlock" arrangement is no
+	// longer needed: the failure path re-acquires the lock before entering
+	// normalCleanup, so the unlock in normalCleanup is always the matching
+	// one. Delete on an already-absent key is a no-op, so the window opened
+	// here is benign.
+	//
+	// CancelTurn implementations must NOT acquire e.interactiveMu themselves —
+	// they operate on the agent subprocess's own state (stdin write, waiting
+	// for its result event) and don't touch engine bookkeeping.
 	if canceller, ok := agentSession.(AgentSessionCanceller); ok && agentSession != nil {
 		// Keep the state in the map so the next message reuses this session.
 		// Don't markStopped — the session is still usable.
@@ -11312,14 +11417,17 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		state.turnCancelled = true
 		state.mu.Unlock()
 
-		cancelErr := canceller.CancelTurn()
-		if cancelErr != nil {
+		if cancelErr := canceller.CancelTurn(); cancelErr != nil {
 			slog.Warn("agent session CancelTurn failed, falling back to Close",
 				"session_key", sessionKey, "error", cancelErr)
-			// Fall through to normal cleanup below.
+			// Re-acquire the lock that normalCleanup releases.
+			e.interactiveMu.Lock()
 			goto normalCleanup
 		}
 
+		// Release the busy lock: the turn is over, so the session must not stay
+		// locked against the next user message. Kept from the upstream (HEAD)
+		// side of the rebase.
 		if state.busySession != nil && state.busySession.ForceUnlock() {
 			slog.Info("session busy lock released after turn cancel", "session_key", sessionKey)
 		}
@@ -11327,8 +11435,11 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 		slog.Info("agent session turn cancelled, session kept alive",
 			"session_key", sessionKey)
 
+		// The event name is configurable for backward compatibility: by
+		// default this stays "session.ended" so existing hook rules keep
+		// firing; users can opt in to the more precise "turn.cancelled".
 		e.hooks.Emit(HookEvent{
-			Event:      HookEventSessionEnded,
+			Event:      e.stopHookEventType(),
 			SessionKey: sessionKey,
 		})
 
@@ -11337,7 +11448,15 @@ func (e *Engine) stopInteractiveSessionWithOptions(sessionKey string, notifyQueu
 
 normalCleanup:
 	state.markStopped()
-	delete(e.interactiveStates, sessionKey)
+	// Only remove the entry if it is still the state this call captured.
+	// normalCleanup is reachable after interactiveMu was released around a
+	// blocking CancelTurn, so /new (or another /stop) may have installed a
+	// fresh state for the same key in the meantime. Deleting that one would
+	// orphan its live agent session and make the next message spawn a
+	// duplicate CLI process.
+	if current, ok := e.interactiveStates[sessionKey]; ok && current == state {
+		delete(e.interactiveStates, sessionKey)
+	}
 	e.interactiveMu.Unlock()
 
 	if pending != nil {
@@ -17939,6 +18058,23 @@ func findInteractiveKeyInStatesLocked(states map[string]*interactiveState, sessi
 		}
 	}
 	return ""
+}
+
+// interactiveStateForCancel returns the agentSession currently bound to the
+// given interactive key, or nil if none. Used by cmdCancel BEFORE it calls
+// stopInteractiveSession, so it can force-close the subprocess even when
+// the canceller branch (AgentSessionCanceller) keeps the subprocess alive
+// for the next user message. Capturing the pointer up front avoids a
+// lookup-after race where another message arrives between the stop and the
+// close and races against the impending teardown.
+func (e *Engine) interactiveStateForCancel(key string) AgentSession {
+	e.interactiveMu.Lock()
+	defer e.interactiveMu.Unlock()
+	state, ok := e.interactiveStates[key]
+	if !ok || state == nil {
+		return nil
+	}
+	return state.agentSession
 }
 
 // lookupEffectiveWorkspaceBinding returns the effective binding for a channel

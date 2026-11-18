@@ -123,6 +123,14 @@ type turnStartReplyWriter struct {
 func (w *turnStartReplyWriter) Write(p []byte) (int, error) { return w.write(p) }
 func (w *turnStartReplyWriter) Close() error                { return nil }
 
+// finishActiveTurn clears the in-flight turn without emitting turn events, so
+// the next Send issues a fresh turn/start instead of steering the active turn.
+func finishActiveTurn(s *appServerSession) {
+	s.stateMu.Lock()
+	s.currentTurn = ""
+	s.stateMu.Unlock()
+}
+
 func TestAppServerSession_SetLiveReasoningEffortPreservesThread(t *testing.T) {
 	for _, tt := range []struct{ effort, want string }{
 		{"high", "high"}, {" HIGH ", "high"}, {"med", "medium"}, {"very-high", "xhigh"},

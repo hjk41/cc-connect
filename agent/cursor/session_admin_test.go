@@ -565,14 +565,15 @@ func TestRunSQLite_ReadonlyAndBounded(t *testing.T) {
 
 func TestRunSQLite_KillsOversizedWriterBeforeWait(t *testing.T) {
 	script := filepath.Join(t.TempDir(), "fake-sqlite3")
+	// Coreutils only: python3 in Git Bash can resolve to the WindowsApps
+	// store alias, which never prints and never exits until the query
+	// timeout fires.
 	body := "#!/bin/sh\n" +
-		"python3 -c 'import sys,time\n" +
-		"sys.stdout.buffer.write(b\"x\"*65536)\n" +
-		"sys.stdout.flush()\n" +
-		"while True:\n" +
-		"    sys.stdout.buffer.write(b\"y\"*65536)\n" +
-		"    sys.stdout.flush()\n" +
-		"    time.sleep(0.05)\n'\n"
+		"head -c 65536 /dev/zero | tr '\\0' 'x'\n" +
+		"while :; do\n" +
+		"    head -c 65536 /dev/zero | tr '\\0' 'y'\n" +
+		"    sleep 0.05\n" +
+		"done\n"
 	script = testutil.Shell(t, script, body)
 	prevBin, prevMax := cursorSQLiteBin, cursorMaxHexResult
 	cursorSQLiteBin = script

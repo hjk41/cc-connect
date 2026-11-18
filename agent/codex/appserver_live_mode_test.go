@@ -116,11 +116,15 @@ func TestAppServerSession_SetLiveMode_SandboxOverridesPreserveInFlightTurn(t *te
 			if s.currentTurn != "in-flight" || !s.Alive() || s.CurrentSessionID() != "parent-thread" || len(requests()) != 1 {
 				t.Fatal("live switch affected the in-flight turn or transport")
 			}
-			// Keep the explicit override on subsequent turns.
+			// Keep the explicit override on subsequent turns. End each turn
+			// after its Send: a Send during an active turn steers it instead
+			// of starting a new turn.
+			finishActiveTurn(s)
 			for i := 0; i < 2; i++ {
 				if err := s.Send("next", "msg", nil, nil); err != nil {
 					t.Fatal(err)
 				}
+				finishActiveTurn(s)
 			}
 			got := requests()
 			if len(got) != 3 {
@@ -177,6 +181,9 @@ func TestAppServerSession_SetLiveMode_RestoresRememberedWorkspacePolicy(t *testi
 					if err := s.Send("away", "msg", nil, nil); err != nil {
 						t.Fatal(err)
 					}
+					// End the turn so the next Send starts a fresh turn
+					// instead of steering the active one.
+					finishActiveTurn(s)
 					if !s.SetLiveMode(target.mode) {
 						t.Fatal("remembered workspace switch rejected")
 					}
@@ -309,6 +316,7 @@ func TestAppServerSession_SetLiveMode_ConcurrentSendSnapshots(t *testing.T) {
 		if err := s.Send("next", "msg", nil, nil); err != nil {
 			t.Fatal(err)
 		}
+		finishActiveTurn(s)
 	}
 	wg.Wait()
 	for _, req := range requests()[1:] {
