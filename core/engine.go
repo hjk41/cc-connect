@@ -7144,6 +7144,23 @@ func (e *Engine) notifyDroppedQueuedMessages(state *interactiveState, reason err
 // state.mu) to close the race window between "queue empty" and "session unlocked".
 // Returns true if the session was unlocked by this call.
 func (e *Engine) drainPendingMessages(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, lockGen uint64) bool {
+	// This loop reads from Events(), so the unsolicited reader must not run
+	// concurrently: it can steal a queued turn's EventResult and leave this
+	// drain waiting forever, orphaning the rest of the queue. The turn-end
+	// path arms the reader before calling us, so stop it here and restart
+	// it on exit while the session is still alive and clean — the same
+	// contract drainOrphanedQueue already uses.
+	e.stopUnsolicitedReader(state)
+	defer func() {
+		state.mu.Lock()
+		alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
+		workspaceDir := state.workspaceDir
+		state.mu.Unlock()
+		if alive {
+			e.startUnsolicitedReader(state, session, sessions, sessionKey, workspaceDir)
+		}
+	}()
+
 	for {
 		state.mu.Lock()
 		if len(state.pendingMessages) == 0 {
