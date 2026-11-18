@@ -64,6 +64,9 @@ func TestAppServerSession_ModeProtocolPayloads(t *testing.T) {
 					if err := s.Send("hello", "msg", nil, nil); err != nil {
 						t.Fatal(err)
 					}
+					// A second Send during an active turn steers it; end the
+					// turn first so each Send exercises turn/start.
+					finishActiveTurn(s)
 				}
 				if len(requests) != 3 || requests[0].Method != method || !reflect.DeepEqual(requests[0].Params, threadParams) {
 					t.Fatalf("thread request = %#v, want %s %#v", requests, method, threadParams)

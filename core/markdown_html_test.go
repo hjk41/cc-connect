@@ -814,3 +814,41 @@ func TestMarkdownToSimpleHTML_TableColonAlignment(t *testing.T) {
 		t.Fatalf("expected table cells, got %q", out)
 	}
 }
+
+// Regression test for #2275: an HTML tag written inside inline code must be
+// escaped code text, not restored as live Telegram markup. Before the fix the
+// existing-tag stash ran before the inline-code extraction, so the tag was
+// protected as markup and then put back inside the <code> element.
+func TestMarkdownToSimpleHTML_InlineCodeEscapesHTMLTags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "bold tag in inline code",
+			in:   "use `<b>hello</b>` here",
+			want: "use <code>&lt;b&gt;hello&lt;/b&gt;</code> here",
+		},
+		{
+			name: "link tag in inline code",
+			in:   "use `<a href=\"x\">y</a>` here",
+			want: "use <code>&lt;a href=&quot;x&quot;&gt;y&lt;/a&gt;</code> here",
+		},
+		{
+			name: "existing code tag still preserved",
+			in:   "keep <code>git status</code> and `<b>x</b>`",
+			want: "keep <code>git status</code> and <code>&lt;b&gt;x&lt;/b&gt;</code>",
+		},
+	}
+	for _, tc := range cases {
+		for fnName, conv := range map[string]func(string) string{
+			"MarkdownToSimpleHTML":    MarkdownToSimpleHTML,
+			"FormatSmartTelegramHTML": FormatSmartTelegramHTML,
+		} {
+			if got := conv(tc.in); got != tc.want {
+				t.Errorf("%s(%q) = %q, want %q", fnName, tc.in, got, tc.want)
+			}
+		}
+	}
+}
