@@ -285,9 +285,7 @@ func TestAntigravitySession_ReportsHeadlessExitFailures(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
-			if err := os.WriteFile(cmdPath, []byte("#!/bin/sh\n"+tt.script+"\n"), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			cmdPath = testutil.Shell(t, cmdPath, "#!/bin/sh\n"+tt.script+"\n")
 			s, err := newAntigravitySession(context.Background(), cmdPath, nil, t.TempDir(), "", "yolo", "existing-session", nil, 2*time.Second)
 			if err != nil {
 				t.Fatal(err)
@@ -330,9 +328,7 @@ func TestAntigravitySession_StreamResponseDiagnostics(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
 			cmdPath := filepath.Join(t.TempDir(), "fake-agy.sh")
 			script := "#!/bin/sh\ncat <<'AGY_OUTPUT'\n" + tt.output + "\nAGY_OUTPUT\n"
-			if err := os.WriteFile(cmdPath, []byte(script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			cmdPath = testutil.Shell(t, cmdPath, script)
 			s, err := newAntigravitySession(context.Background(), cmdPath, nil, t.TempDir(), "", "yolo", "existing-session", nil, 2*time.Second)
 			if err != nil {
 				t.Fatal(err)
