@@ -294,3 +294,149 @@ macOS 会在内核中缓存与文件对象关联的代码签名信息。原地�
 禁止使用 `cp new-binary ~/.cc-connect/bin/cc-connect`、重定向写入、`shutil.copyfile()` 等方式直接写入现有安装文件，也不要直接把已安装路径作为构建输出。允许复制到全新的临时路径；最终安装步骤必须是上述原子替换。
 
 参考：[Apple — Updating Mac Software](https://developer.apple.com/documentation/security/updating-mac-software)。
+
+<!-- cc-connect-instructions -->
+You are running inside cc-connect, a bridge that connects you to messaging platforms.
+Your normal text responses are automatically delivered to the user — just reply normally, do NOT use cc-connect send for ordinary text replies.
+
+## Available tools
+### 把生成的图片、文件、语音消息回发给用户
+当你生成了需要发送给用户的本地图片或文件时,使用:
+
+  cc-connect send --image /absolute/path/to/image.png
+  cc-connect send --file /absolute/path/to/report.pdf
+  cc-connect send --file /absolute/path/to/report.pdf --image /absolute/path/to/chart.png
+
+可以重复使用 --image / --file。仅在需要把生成的附件投递到用户时使用这个命令。
+如果同时使用了 --message,不要在正常回复里再说一遍完全相同的句子,因为正常回复本身也会自动发送给用户。
+
+发送音频 (mp3/wav/m4a/ogg/opus) 或视频 (mp4/mov/webm) 片段、且希望它们以内联的原生语音气泡或视频播放器形态呈现(而不是作为普通文件下载)时,使用专用参数:
+
+  cc-connect send --audio /absolute/path/to/clip.mp3
+  cc-connect send --video /absolute/path/to/demo.mp4
+
+这些参数会在支持原生媒体的平台上渲染为原生形态(例如飞书的语音气泡、Telegram 的语音消息)。cc-connect 会自动把音频转码为平台偏好的编码(例如飞书的 opus)。在不支持专用音视频的平台,cc-connect 会自动回退到文件附件路径以保证投递成功。当用户明确要求 audio/video 时,不要把请求降级为 --file。
+
+当用户明确要求把文字合成为语音时,使用:
+
+  cc-connect send --tts "要朗读的文字"
+
+cc-connect send --tts(或 --audio)成功之后,除非用户同时要求可见的文字确认,否则只回复 NO_REPLY,避免在语音消息后再发一条文字消息。
+
+### 定时任务:什么时候用 /cron,什么时候用 /timer
+
+cc-connect 有两个不同的调度命令。选错会让用户感到很困惑。
+
+  ┌──────────────────────────────┬─────────────────────────────┐
+  │ 使用 cc-connect cron …       │ 使用 cc-connect timer …     │
+  ├──────────────────────────────┼─────────────────────────────┤
+  │ 周期性调度                    │ 单次延时 / 一次性任务         │
+  │ "每天/每周/每小时"            │ "X 分钟后/小时后/明天"        │
+  │ "every day/week/Monday"      │ "in 30 min", "tomorrow 9am"  │
+  │ "每天早上6点总结"             │ "3 分钟后检查负载"            │
+  │ 一直存在直到被删除             │ 触发后自动归档                │
+  │ 通过 /cron 查看               │ 通过 /timer 查看              │
+  └──────────────────────────────┴─────────────────────────────┘
+
+告诉用户任务已安排好后,顺手告诉他们用哪个命令查看/管理:
+(单次任务说"用 /timer 查看",周期任务说"用 /cron 查看")。
+
+### 周期任务 (cron) — RECURRING
+当用户让你做周期性任务时(例如"每天早上6点帮我总结GitHub trending"),用 Bash 工具执行:
+
+  cc-connect cron add --cron "<分> <时> <日> <月> <星期>" --prompt "<任务描述>" --desc "<简短标签>"
+
+环境变量 CC_PROJECT 和 CC_SESSION_KEY 已经设置好,你不需要传 --project 或 --session-key。
+
+可选参数:
+  --session-mode <mode>     reuse(默认)或 new-per-run(每次触发用新会话)
+  --timeout-mins <n>        每次运行最长等待分钟数(默认 30,0 = 不限)
+  --exec <command>          直接跑 shell 命令而不是 --prompt
+
+示例:
+  cc-connect cron add --cron "0 6 * * *" --prompt "汇总 GitHub trending 仓库并发摘要" --desc "每日 GitHub Trending"
+  cc-connect cron add --cron "0 9 * * 1" --prompt "生成本周项目状态报告" --desc "每周报告"
+  cc-connect cron add --cron "*/2 * * * *" --exec "ipconfig" --session-mode new-per-run --desc "每 2 分钟跑 ipconfig"
+
+你也可以列出、检查、立即执行、修改或删除 cron 任务:
+  cc-connect cron list
+  cc-connect cron info <job-id> [字段]
+  cc-connect cron exec <job-id>
+  cc-connect cron edit <job-id> <字段> <新值>
+  cc-connect cron del <job-id>
+
+修改现有任务时,先用 `cc-connect cron info <job-id>` 看当前值,再用 `cron edit` 只改用户要求改的字段。
+用 `cron exec <job-id>` 立即执行已存在的调度任务;这和创建 shell 任务时用的 `--exec <command>` 参数不同。
+只有修改一个字段时,用 `cron edit` 而不是删除后重建。除非用户明确要求替换任务,不要先删再建。
+常用可编辑字段:
+  cron_expr     新调度,例如 "0 9 * * *"
+  prompt        新任务 prompt(或 `exec` 表示 shell 命令)
+  description   简短标签
+  enabled       true / false(暂停而不删除)
+  mute          true / false(静默所有消息)
+  timeout_mins  整数分钟(0 = 不限)
+完整字段列表见 `cc-connect cron edit --help`。
+
+示例:
+  cc-connect cron exec abc123
+  cc-connect cron edit abc123 cron_expr "0 9 * * *"
+  cc-connect cron edit abc123 enabled false
+  cc-connect cron edit abc123 prompt "更新后的每日摘要任务"
+
+### 一次性延时 (timer) — ONE-TIME DELAY
+当用户让你在一段延时之后或在某个未来时刻做某事时
+(例如"两小时后帮我检查PR"、"3 分钟后看下系统负载"、"明天早上 9 点提醒我"),
+用 Bash 工具执行:
+
+  cc-connect timer add --delay <时长> --prompt "<任务描述>"
+
+重要:不要用 cron 跑单次延时。形如 "4 19 14 6 *" 的 cron 表达式
+意思是"每年 6 月 14 日 19:04"而不是"这一天跑一次"。cron 没有内建"只跑一次"模式 ——
+所有一次性 / 延时任务都用 timer。
+
+时长示例:30m、2h、1h30m。或者用绝对时间:--at "2026-05-16T09:00"
+不带时区的绝对时间(例如 "2026-05-16T09:00")按系统本地时区解释。用户说"明天早上9点"时用本地时间。
+环境变量 CC_PROJECT 和 CC_SESSION_KEY 已经设置好。
+
+可选参数:
+  --exec <command>          直接跑 shell 命令而不是 --prompt
+  --desc <text>             简短描述
+  --session-mode <mode>     reuse(默认)或 new-per-run(每次跑用新会话)
+  --timeout-mins <n>        每次最长等待分钟数(默认 30,0 = 不限)
+  --mute                    静默所有消息(开始通知和结果)
+
+示例:
+  cc-connect timer add --delay 2h --prompt "检查 PR 状态" --desc "PR 检查"
+  cc-connect timer add --delay 30m --exec "df -h" --desc "磁盘检查"
+  cc-connect timer add --at "2026-05-16T09:00" --prompt "早会提醒"
+
+你也可以列出或取消 timer:
+  cc-connect timer list
+  cc-connect timer del <timer-id>
+
+### Bot 之间转发 (relay)
+当需要和另一个 bot 通信(例如向另一个 AI agent 提问)时,使用:
+
+  cc-connect relay send --to <目标项目名> "<消息>"
+
+重要:<目标项目名> 必须是 /bind 命令输出里的 EXACT 项目名。
+不要猜测或修改名字 —— 完全照搬显示值(例如 "gemini" 而不是 "gemini-bot")。
+
+这会把消息发给目标 bot 并等待它的回复(打印到 stdout)。
+会话在群聊里可见,每个 bot 维护自己的 relay 会话。
+
+环境变量 CC_PROJECT 和 CC_SESSION_KEY 已经设置好,relay 知道用哪个群聊。
+### Silent reply (suppress delivery)
+If the current turn warrants no user-visible response — e.g. a scheduled trigger
+found nothing worth reporting, the incoming message was an acknowledgement that
+needs no reaction, or it was clearly directed at another participant — end your
+reply with the token `NO_REPLY` on its own line (case-insensitive). cc-connect strips
+the trailing marker before delivery:
+- If the whole reply is just `NO_REPLY` (or the text becomes empty after the
+  marker is stripped), nothing is delivered — no preview, no done reaction, no
+  TTS. Prefer this for group-chat gate decisions where silence is the whole point.
+- If you wrote reasoning before the marker, the stripped reasoning is still
+  delivered as a normal reply (the marker only suppresses itself, not the
+  surrounding text).
+Use this sparingly; when in doubt, send a brief reply instead.
+
