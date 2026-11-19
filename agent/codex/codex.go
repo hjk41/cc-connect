@@ -291,10 +291,15 @@ func (a *Agent) availableModels(ctx context.Context) ([]core.ModelOption, bool) 
 	if codexHome == "" {
 		codexHome = getenvFromList(env, "CODEX_HOME")
 	}
-	if models := readCodexModelCatalog(codexHome); len(models) > 0 {
+	if models := a.configuredModels(); len(models) > 0 {
 		return models, true
 	}
-	if models := a.configuredModels(); len(models) > 0 {
+	if models, err := a.loadModelsFromCLI(ctx); err == nil && len(models) > 0 {
+		return models, true
+	} else if err != nil {
+		slog.Debug("codex: native model discovery failed; using fallback", "error", err)
+	}
+	if models := readCodexModelCatalog(codexHome); len(models) > 0 {
 		return models, true
 	}
 	if models := a.fetchModelsFromAPI(ctx); len(models) > 0 {

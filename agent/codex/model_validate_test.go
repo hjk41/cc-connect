@@ -34,6 +34,13 @@ func isolateModelValidation(t *testing.T) string {
 	return home
 }
 
+// unavailableCodexCLI keeps model validation tests hermetic on machines with a
+// real codex installation: native model discovery must not leak into fixtures.
+func unavailableCodexCLI(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "codex-not-installed")
+}
+
 func TestCmdModel_YoloRejectedBeforePersistence(t *testing.T) {
 	isolateModelValidation(t)
 	a := &Agent{model: "gpt-4.1", mode: "full-auto", activeIdx: -1}
@@ -79,7 +86,7 @@ func TestValidateModel_RejectsUnknownModels(t *testing.T) {
 
 func TestValidateModel_FallbackPreservesManualModelsButRejectsModes(t *testing.T) {
 	isolateModelValidation(t)
-	a := &Agent{activeIdx: -1}
+	a := &Agent{activeIdx: -1, cmd: unavailableCodexCLI(t)}
 	for _, model := range []string{"gpt-future-codex", "vendor/custom-model"} {
 		if got, err := a.ValidateModel(context.Background(), model); err != nil || got != model {
 			t.Fatalf("manual model %q = %q, %v", model, got, err)
@@ -109,7 +116,7 @@ func TestValidateModel_AcceptsCatalogAndProviderModels(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, "models_cache.json"), []byte(cache), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	a := &Agent{activeIdx: -1}
+	a := &Agent{activeIdx: -1, cmd: unavailableCodexCLI(t)}
 	validator, ok := any(a).(core.ModelValidator)
 	if !ok {
 		t.Fatal("Codex must implement ModelValidator")
@@ -143,7 +150,7 @@ func TestValidateModel_UsesEffectiveCodexHome(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(home, "catalog.json"), []byte(catalog), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			a := &Agent{activeIdx: -1}
+			a := &Agent{activeIdx: -1, cmd: unavailableCodexCLI(t)}
 			switch source {
 			case "option":
 				a.codexHome = home
