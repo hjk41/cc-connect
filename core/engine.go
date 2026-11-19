@@ -4262,6 +4262,9 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 	if ws.agent != nil {
 		return ws.agent, ws.sessions, nil
 	}
+	if e.agent == nil {
+		return nil, nil, fmt.Errorf("create workspace agent for %s: no primary agent configured", workspace)
+	}
 
 	// Create a new agent instance with this workspace's work_dir
 	opts := make(map[string]any)
@@ -9640,6 +9643,10 @@ func (e *Engine) cmdUsage(p Platform, msg *Message) {
 
 	report, err := reporter.GetUsage(fetchCtx)
 	if err != nil {
+		if errors.Is(err, ErrNotSupported) {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgUsageNotSupported))
+			return
+		}
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgUsageFetchFailed, err))
 		return
 	}
