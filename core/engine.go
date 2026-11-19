@@ -7629,6 +7629,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 		normalizedPath := normalizeWorkspacePath(routePath)
 		e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizedPath)
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, normalizedPath))
+		e.setupWorkspaceInstructions(normalizedPath)
 		return true
 	}
 	bindWorkspace := func(bindingKey, wsName string, successKey MsgKey) bool {
@@ -7642,6 +7643,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 
 		e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(wsPath))
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, wsName))
+		e.setupWorkspaceInstructions(wsPath)
 		return true
 	}
 	initWorkspace := func(bindingKey, target string, successKey MsgKey) bool {
@@ -7659,6 +7661,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 			}
 			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(dirPath))
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsBindSuccess, dirPath))
+			e.setupWorkspaceInstructions(dirPath)
 			return true
 		}
 		if !e.workspaceInitAllowLocalPaths && looksLikeLocalDir(target) && !looksLikeGitURL(target) {
@@ -7677,6 +7680,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 		if _, err := os.Stat(cloneTo); err == nil {
 			e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
+			e.setupWorkspaceInstructions(cloneTo)
 			return true
 		}
 
@@ -7689,6 +7693,7 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 
 		e.workspaceBindings.Bind(bindingKey, channelKey, resolveChannelName(), normalizeWorkspacePath(cloneTo))
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(successKey, cloneTo))
+		e.setupWorkspaceInstructions(cloneTo)
 		return true
 	}
 	listBindings := func(bindingKey string, emptyKey, titleKey MsgKey) {
@@ -17603,6 +17608,29 @@ func (e *Engine) setupAgentForMessage(msg *Message) Agent {
 	return agent
 }
 
+// setupWorkspaceInstructions writes the cc-connect tool prompt into the
+// bound workspace's agent memory file (AGENTS.md etc.) right after a
+// /workspace bind|init succeeds, so the agent learns `cc-connect send`,
+// cron and timer without a manual /bind setup. The workspace agent is
+// resolved (creating the agent object is cheap; its process still spawns
+// lazily on the first message). Failures are logged and never block the
+// bind.
+func (e *Engine) setupWorkspaceInstructions(workspace string) {
+	workspace = normalizeWorkspacePath(workspace)
+	agent, _, err := e.getOrCreateWorkspaceAgent(workspace)
+	if err != nil {
+		slog.Warn("workspace bind: resolve agent for setup", "workspace", workspace, "error", err)
+		return
+	}
+	result, file, err := e.setupMemoryFileFor(agent)
+	switch {
+	case err != nil || result == setupError:
+		slog.Warn("workspace bind: write agent instructions failed", "workspace", workspace, "file", file, "error", err)
+	case result == setupOK:
+		slog.Info("workspace bind: wrote agent instructions", "workspace", workspace, "file", file)
+	}
+}
+
 // setupMemoryFileFor appends AgentSystemPrompt() to agent's project memory
 // file. It returns the result, the filename (for messages), and any error.
 func (e *Engine) setupMemoryFileFor(agent Agent) (setupResult, string, error) {
@@ -18171,6 +18199,7 @@ func (e *Engine) resolveWorkspace(p Platform, channelID string) (string, string,
 		e.workspaceBindings.Bind(projectKey, channelKey, channelName, normalized)
 		slog.Info("workspace auto-bound by convention",
 			"channel", channelName, "workspace", normalized)
+		e.setupWorkspaceInstructions(normalized)
 		return normalized, channelName, nil
 	}
 
@@ -18255,6 +18284,7 @@ func (e *Engine) handleWorkspaceInitFlow(p Platform, msg *Message, channelName s
 			delete(e.initFlows, channelKey)
 			e.initFlowsMu.Unlock()
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsBindSuccess, dirPath))
+			e.setupWorkspaceInstructions(dirPath)
 			return true
 		}
 		if !e.workspaceInitAllowLocalPaths && looksLikeLocalDir(content) && !looksLikeGitURL(content) {
@@ -18315,6 +18345,7 @@ func (e *Engine) handleWorkspaceInitFlow(p Platform, msg *Message, channelName s
 		e.initFlowsMu.Unlock()
 
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsCloneSuccess, flow.cloneTo))
+		e.setupWorkspaceInstructions(flow.cloneTo)
 		return true
 	}
 

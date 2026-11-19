@@ -948,3 +948,50 @@ func TestSetupMemoryFileForMessage_MultiWorkspaceWritesActiveWorkspace(t *testin
 		t.Fatalf("root AGENTS.md must not be written, stat err = %v", err)
 	}
 }
+
+// TestWorkspaceBindWritesAgentInstructions is the regression for bound
+// workspaces missing the cc-connect tool prompt: /workspace bind only
+// recorded the mapping, so agents never learned `cc-connect send` and
+// could not deliver generated images/files (devin resorted to imgur
+// uploads). A successful bind must write the instruction block into the
+// workspace agent's memory file.
+func TestWorkspaceBindWritesAgentInstructions(t *testing.T) {
+	baseDir := t.TempDir()
+	wsDir := filepath.Join(baseDir, "ws-a")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	agentName := "workspace-bind-instructions-test"
+	RegisterAgent(agentName, func(opts map[string]any) (Agent, error) {
+		dir, _ := opts["work_dir"].(string)
+		return &workspaceMemoryAgent{
+			namedTestAgent: namedTestAgent{name: agentName},
+			workDir:        dir,
+		}, nil
+	})
+
+	rootAgent := &workspaceMemoryAgent{
+		namedTestAgent: namedTestAgent{name: agentName},
+		workDir:        baseDir,
+	}
+	sessionPath := filepath.Join(t.TempDir(), "sessions.json")
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", rootAgent, []Platform{p}, sessionPath, LangEnglish)
+	e.SetMultiWorkspace(baseDir, filepath.Join(t.TempDir(), "bindings.json"))
+
+	channelID := "chan-bind-setup"
+	e.handleWorkspaceCommand(p, &Message{
+		SessionKey: "test:" + channelID + ":user",
+		Platform:   "test",
+		ChannelKey: channelID,
+		UserID:     "user",
+	}, []string{"bind", "ws-a"})
+
+	content, err := os.ReadFile(filepath.Join(wsDir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("workspace AGENTS.md not written after bind: %v", err)
+	}
+	if !strings.Contains(string(content), ccConnectInstructionMarker) {
+		t.Fatal("workspace AGENTS.md missing cc-connect instruction marker")
+	}
+}

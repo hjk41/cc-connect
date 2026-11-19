@@ -340,6 +340,22 @@ func (a *Agent) GetWorkDir() string {
 	return a.workDir
 }
 
+// ProjectMemoryFile is <work_dir>/AGENTS.md, the de-facto instruction
+// file ACP CLI agents (Factory Droid, opencode-style CLIs) read. It lets
+// the engine write the `cc-connect send` / cron tool prompt into the
+// workspace on /workspace bind and /bind setup.
+func (a *Agent) ProjectMemoryFile() string {
+	dir := strings.TrimSpace(a.GetWorkDir())
+	if dir == "" {
+		dir = "."
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.Join(dir, "AGENTS.md")
+	}
+	return filepath.Join(abs, "AGENTS.md")
+}
+
 func (a *Agent) WorkspaceAgentOptions() map[string]any {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
