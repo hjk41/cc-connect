@@ -19,9 +19,13 @@ Steps:
 6. Commit the merge, push the branch, and open or update a PR against main.
    Always pass -R hjk41/cc-connect to gh commands; the default remote points at
    upstream.
-7. Wait for required checks (gh pr checks <num> --required --watch --fail-fast).
-   On failure, read the logs, fix the root cause, push again, and repeat until
-   green. Do not skip or delete tests and do not weaken lint.
+7. After pushing, check whether CI started (gh pr checks <num>). If no checks
+   are reported within ~30s, dispatch CI explicitly:
+   gh workflow run ci.yml --ref <sync-branch> -R hjk41/cc-connect
+   then wait for required checks (gh pr checks <num> --required --watch
+   --fail-fast). On failure, read the logs, fix the root cause, push again,
+   and repeat until green. Do not skip or delete tests and do not weaken
+   lint.
 8. Merge with a merge commit (gh pr merge <num> --merge). Never squash or
    rebase. Do not use --admin to bypass checks. Confirm the push-to-main CI is
    green.

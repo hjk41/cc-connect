@@ -58,6 +58,16 @@ BODY
     gh pr create --base main --head "$sync_branch" --title 'chore: sync upstream main' --body-file "$body_file"
   fi
   gh pr view "$sync_branch" --json url --jq '.url' >> "$GITHUB_STEP_SUMMARY"
+
+  # Push events made with GITHUB_TOKEN do not trigger pull_request workflow
+  # runs, which leaves the required "CI passed" check missing and the PR
+  # blocked. Dispatch CI explicitly so the check runs regardless of which
+  # credential pushed the sync branch.
+  if gh workflow run ci.yml --ref "$sync_branch"; then
+    echo "Dispatched CI on $sync_branch" >> "$GITHUB_STEP_SUMMARY"
+  else
+    echo "WARNING: could not dispatch CI on $sync_branch; trigger it manually" >> "$GITHUB_STEP_SUMMARY"
+  fi
 }
 
 sync_upstream
