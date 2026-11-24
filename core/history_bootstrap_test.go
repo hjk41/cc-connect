@@ -1,6 +1,8 @@
 package core
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,13 @@ func TestCUJ_B10_AgentSwitchBootstrapsHistory(t *testing.T) {
 	if second := firstSession.getSentPrompts()[1]; strings.Contains(second, "prior conversation") {
 		t.Fatalf("history injected again into same native conversation: %q", second)
 	}
+	// The second turn's EventResult still runs AddHistory + sessions.Save on
+	// the message goroutine after Send returns. Wait until that save has hit
+	// disk, otherwise t.TempDir cleanup races the write and fails on Windows.
+	env.waitFor("second turn persisted", 2*time.Second, func() bool {
+		data, err := os.ReadFile(filepath.Join(env.tempDir, "sessions.json"))
+		return err == nil && strings.Count(string(data), `"content": "ok"`) >= 2
+	})
 }
 
 func TestHistoryBootstrapOptionsAndPersistence(t *testing.T) {
