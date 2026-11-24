@@ -32,6 +32,7 @@ func TestCheckDataDirUsesConfiguredDir(t *testing.T) {
 func TestCheckDataDirFallsBackToHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	got := checkDataDir("")
 	want := filepath.Join(home, ".cc-connect")
 	if len(got) != 1 || got[0].Detail != want+" does not exist" {

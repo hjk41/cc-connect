@@ -226,8 +226,12 @@ func TestOpencodeRunEnvSetsPWDToWorkDir(t *testing.T) {
 	t.Setenv("PWD", "/cc-connect/cwd")
 
 	env := opencodeRunEnv("/repo", []string{"FOO=bar", "PWD=/from/extra"})
-	if got := envValues(env, "PWD"); !reflect.DeepEqual(got, []string{"/repo"}) {
-		t.Fatalf("PWD = %q, want [\"/repo\"]", got)
+	wantPwd, err := filepath.Abs("/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := envValues(env, "PWD"); !reflect.DeepEqual(got, []string{wantPwd}) {
+		t.Fatalf("PWD = %q, want %q", got, wantPwd)
 	}
 	if got := envValues(env, "FOO"); !reflect.DeepEqual(got, []string{"bar"}) {
 		t.Fatalf("FOO = %q, want [\"bar\"]", got)

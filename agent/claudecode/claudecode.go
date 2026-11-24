@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -1602,7 +1603,7 @@ func encodeClaudeProjectKey(absPath string) string {
 	if absPath == "" {
 		return ""
 	}
-	normalized := filepath.Clean(strings.ReplaceAll(absPath, "\\", "/"))
+	normalized := path.Clean(strings.ReplaceAll(absPath, "\\", "/"))
 	if len(normalized) >= 2 && normalized[1] == ':' && normalized[0] >= 'a' && normalized[0] <= 'z' {
 		normalized = strings.ToUpper(normalized[:1]) + normalized[1:]
 	}

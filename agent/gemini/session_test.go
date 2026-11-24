@@ -16,6 +16,7 @@ import (
 func TestGetSessionHistory_GeminiSavedConversation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	workDir := t.TempDir()
 	chats := filepath.Join(home, ".gemini", "tmp", geminiProjectSlug(workDir), "chats")
 	if err := os.MkdirAll(chats, 0o755); err != nil {

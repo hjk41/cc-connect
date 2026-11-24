@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -142,7 +143,11 @@ func TestSaveGlobalSettingsFallbackBacksUpOriginal(t *testing.T) {
 	if string(backup) != original {
 		t.Fatal("fallback backup does not contain the exact original document")
 	}
-	if info, err := os.Stat(path + ".bak"); err != nil || info.Mode().Perm() != 0600 {
+	wantPerm := os.FileMode(0600)
+	if runtime.GOOS == "windows" {
+		wantPerm = 0666
+	}
+	if info, err := os.Stat(path + ".bak"); err != nil || info.Mode().Perm() != wantPerm {
 		t.Fatalf("backup permissions: info=%v err=%v", info, err)
 	}
 	cfg := readConfigFixture(t, path)
@@ -243,6 +248,10 @@ func TestSaveGlobalSettingsKeepsConfigPermissions(t *testing.T) {
 	if err := os.Chmod(path, 0640); err != nil {
 		t.Fatal(err)
 	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	language := "zh"
 	if err := SaveGlobalSettings(GlobalSettingsUpdate{Language: &language}); err != nil {
 		t.Fatal(err)
@@ -251,7 +260,7 @@ func TestSaveGlobalSettingsKeepsConfigPermissions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0640 {
-		t.Fatalf("config mode = %04o, want 0640", info.Mode().Perm())
+	if info.Mode().Perm() != before.Mode().Perm() {
+		t.Fatalf("config mode = %04o, want %04o", info.Mode().Perm(), before.Mode().Perm())
 	}
 }
