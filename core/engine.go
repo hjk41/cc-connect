@@ -8369,7 +8369,7 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		if hp, ok := agent.(HistoryProvider); ok {
 			entries, err := hp.GetSessionHistory(e.ctx, matched.ID, 0)
 			if err != nil {
-				slog.Warn("switch: agent transcript read failed", "session_id", matched.ID, "error", err)
+				slog.Warn("switch: agent transcript read failed", "session_key", msg.SessionKey, "error", err)
 			} else if switched.SeedHistoryIfEmpty(entries) {
 				sessions.Save()
 			}
