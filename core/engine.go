@@ -2081,7 +2081,7 @@ func (e *Engine) executeTimerShell(p Platform, replyCtx any, job *TimerJob) erro
 
 	readPipe := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			mu.Lock()
 			if buf.Len() > 0 {
@@ -2253,7 +2253,7 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 
 	readPipe := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			mu.Lock()
 			if buf.Len() > 0 {
@@ -2367,6 +2367,11 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 	}
 }
 
+// maxCronShellOutputRunes bounds total output delivered from a single shell
+// cron/timer job so a runaway command cannot flood the chat with thousands of
+// chunks while normal multi-kilobyte digests/reports are delivered in full.
+const maxCronShellOutputRunes = 100000
+
 func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sync.Mutex, buf *bytes.Buffer, cmdLabel string, opts ...any) error {
 	mu.Lock()
 	output := buf.String()
@@ -2384,11 +2389,11 @@ func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sy
 		if result == "" {
 			result = "(no output)"
 		}
-		finalMsg = fmt.Sprintf("⏰ ✅ `%s`\n\n%s", cmdLabel, truncateStr(result, 3000))
+		finalMsg = fmt.Sprintf("⏰ ✅ `%s`\n\n%s", cmdLabel, truncateStr(result, maxCronShellOutputRunes))
 	} else {
 		errMsg := output
 		if errMsg != "" {
-			finalMsg = fmt.Sprintf("⏰ ❌ `%s`\n\n%s\n\nerror: exit code %d", cmdLabel, truncateStr(errMsg, 3000), cmd.ProcessState.ExitCode())
+			finalMsg = fmt.Sprintf("⏰ ❌ `%s`\n\n%s\n\nerror: exit code %d", cmdLabel, truncateStr(errMsg, maxCronShellOutputRunes), cmd.ProcessState.ExitCode())
 		} else {
 			finalMsg = fmt.Sprintf("⏰ ❌ `%s`\n\nerror: exit code %d", cmdLabel, cmd.ProcessState.ExitCode())
 		}
@@ -2398,16 +2403,13 @@ func (e *Engine) finishCronShell(p Platform, replyCtx any, cmd *exec.Cmd, mu *sy
 		if useUpdate, ok := opts[0].(bool); ok && useUpdate {
 			if handle := opts[1]; handle != nil {
 				_ = updaterFor(p).UpdateMessage(e.ctx, handle, fmt.Sprintf("⏰ %s `%s`", icon, cmdLabel))
-				e.send(p, replyCtx, finalMsg)
-				if !exitOK {
-					return fmt.Errorf("shell: exit code %d", cmd.ProcessState.ExitCode())
-				}
-				return nil
 			}
 		}
 	}
 
-	e.send(p, replyCtx, finalMsg)
+	for _, chunk := range SplitMessageCodeFenceAware(finalMsg, maxPlatformMessageLen) {
+		e.send(p, replyCtx, chunk)
+	}
 	if !exitOK {
 		return fmt.Errorf("shell: exit code %d", cmd.ProcessState.ExitCode())
 	}
@@ -9158,7 +9160,7 @@ func (e *Engine) runShellWithProgress(p Platform, replyCtx any, command string, 
 
 	readPipe := func(r io.Reader) {
 		scanner := bufio.NewScanner(r)
-		scanner.Buffer(make([]byte, 0, 64*1024), 64*1024)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			mu.Lock()
 			if buf.Len() > 0 {
@@ -12697,24 +12699,8 @@ func (e *Engine) SendToSessionWithOptions(sessionKey, message string, images []I
 	}
 
 	if message != "" {
-		if err := e.waitOutgoing(p); err != nil {
+		if err := e.sendOutboundMessageChunks(p, replyCtx, message, opts.AtUsers, opts.AtAll); err != nil {
 			return err
-		}
-		// Use AtMentionSender when @users specified and platform supports it
-		if len(opts.AtUsers) > 0 || opts.AtAll {
-			if atSender, ok := p.(AtMentionSender); ok {
-				if err := atSender.ReplyWithAt(e.ctx, replyCtx, message, opts.AtUsers, opts.AtAll); err != nil {
-					return err
-				}
-			} else {
-				if err := p.Send(e.ctx, replyCtx, message); err != nil {
-					return err
-				}
-			}
-		} else {
-			if err := p.Send(e.ctx, replyCtx, message); err != nil {
-				return err
-			}
 		}
 		if state != nil {
 			state.mu.Lock()
@@ -12735,6 +12721,27 @@ func (e *Engine) SendToSessionWithOptions(sessionKey, message string, images []I
 			return err
 		}
 		if err := fileSender.SendFile(e.ctx, replyCtx, file); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *Engine) sendOutboundMessageChunks(p Platform, replyCtx any, message string, atUsers []string, atAll bool) error {
+	chunks := SplitMessageCodeFenceAware(message, maxPlatformMessageLen)
+	for i, chunk := range chunks {
+		if err := e.waitOutgoing(p); err != nil {
+			return err
+		}
+		if i == 0 && (len(atUsers) > 0 || atAll) {
+			if atSender, ok := p.(AtMentionSender); ok {
+				if err := atSender.ReplyWithAt(e.ctx, replyCtx, chunk, atUsers, atAll); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if err := p.Send(e.ctx, replyCtx, chunk); err != nil {
 			return err
 		}
 	}
@@ -12794,21 +12801,8 @@ func (e *Engine) SendToSessionInWorkDir(sessionKey, message string, images []Ima
 	}
 
 	if message != "" {
-		if err := e.waitOutgoing(target.platform); err != nil {
+		if err := e.sendOutboundMessageChunks(target.platform, target.replyCtx, message, atUsers, atAll); err != nil {
 			return err
-		}
-		if len(atUsers) > 0 || atAll {
-			if atSender, ok := target.platform.(AtMentionSender); ok {
-				if err := atSender.ReplyWithAt(e.ctx, target.replyCtx, message, atUsers, atAll); err != nil {
-					return err
-				}
-			} else if err := target.platform.Send(e.ctx, target.replyCtx, message); err != nil {
-				return err
-			}
-		} else {
-			if err := target.platform.Send(e.ctx, target.replyCtx, message); err != nil {
-				return err
-			}
 		}
 		if target.state != nil {
 			target.state.mu.Lock()
