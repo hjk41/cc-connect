@@ -9,10 +9,10 @@ import (
 // fallback is useful only if later Markdown transforms retain its source.
 func TestMermaidAcceptance_FallbackPreservesFullFences(t *testing.T) {
 	cases := map[string]string{
-		"long backtick markers": "````mermaid\ninvalid diagram\n````\n",
+		"long backtick markers":          "````mermaid\ninvalid diagram\n````\n",
 		"tilde headings and blank lines": "~~~mermaid\n# source heading\n\n\n\ninvalid diagram\n~~~\n",
-		"unfinished backtick source": "```mermaid\n# source heading\n\n\n\ninvalid diagram",
-		"table-looking tilde source": "~~~mermaid\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\n\n# source heading\n~~~\n",
+		"unfinished backtick source":     "```mermaid\n# source heading\n\n\n\ninvalid diagram",
+		"table-looking tilde source":     "~~~mermaid\n| a | b |\n|---|---|\n| 1 | 2 |\n\n\n\n# source heading\n~~~\n",
 	}
 	for name, source := range cases {
 		t.Run(name, func(t *testing.T) {
