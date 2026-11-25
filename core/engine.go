@@ -605,6 +605,7 @@ type interactiveState struct {
 	restartQueuedOnExit      bool            // recover queued turns when the agent process dies
 	approveAll               bool            // when true, auto-approve all permission requests for this session
 	fromVoice                bool            // true if current turn originated from voice transcription
+	deliveryLabel            string          // label for this automated turn's final reply
 	sideText                 string
 	silentEmpty              bool // suppress fallback reply for an empty synthetic turn
 	deleteMode               *deleteModeState
@@ -1695,7 +1696,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	// Wrap platform to discard all outgoing messages when muted
 	effectivePlatform := targetPlatform
 	if job.Mute {
-		effectivePlatform = &mutePlatform{targetPlatform}
+		effectivePlatform = &mutePlatform{Platform: targetPlatform, kind: "cron", jobID: job.ID, sessionKey: sessionKey}
 	}
 
 	silent := job.Silent != nil && *job.Silent
@@ -1727,14 +1728,15 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	content := job.Prompt
 
 	msg := &Message{
-		SessionKey:   sessionKey,
-		Platform:     platformName,
-		UserID:       "cron",
-		UserName:     "cron",
-		Content:      content,
-		ReplyCtx:     replyCtx,
-		SilentEmpty:  silent,
-		ModeOverride: job.Mode,
+		SessionKey:    sessionKey,
+		Platform:      platformName,
+		UserID:        "cron",
+		UserName:      "cron",
+		Content:       content,
+		ReplyCtx:      replyCtx,
+		SilentEmpty:   silent,
+		ModeOverride:  job.Mode,
+		DeliveryLabel: cronDeliveryLabel(job),
 	}
 
 	// Resolve workspace-specific agent and sessions for multi-workspace mode.
@@ -1906,7 +1908,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 
 	effectivePlatform := targetPlatform
 	if job.Mute {
-		effectivePlatform = &mutePlatform{targetPlatform}
+		effectivePlatform = &mutePlatform{Platform: targetPlatform, kind: "timer", jobID: job.ID, sessionKey: sessionKey}
 	}
 
 	// Notify user unless muted or silent
@@ -2208,6 +2210,18 @@ func cronRunTitle(job *CronJob) string {
 	return "cron"
 }
 
+// cronDeliveryLabel identifies a result without copying the job prompt or
+// shell command into the final reply (silent jobs have no start notice).
+func cronDeliveryLabel(job *CronJob) string {
+	if job == nil {
+		return "⏰"
+	}
+	if desc := strings.TrimSpace(job.Description); desc != "" {
+		return fmt.Sprintf("⏰ [%s] %s", job.ID, truncateStr(desc, 40))
+	}
+	return fmt.Sprintf("⏰ [%s]", job.ID)
+}
+
 // executeCronShell runs a shell command for a cron job and sends the output.
 func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error {
 	workDir := job.WorkDir
@@ -2225,7 +2239,7 @@ func (e *Engine) executeCronShell(p Platform, replyCtx any, job *CronJob) error 
 		timeout = 60 * time.Second
 	}
 
-	cmdLabel := truncateStr(job.Exec, 60)
+	cmdLabel := fmt.Sprintf("%s [%s]", truncateStr(job.Exec, 48), job.ID)
 
 	ctx, cancel := context.WithTimeout(e.ctx, timeout)
 	defer cancel()
@@ -3339,7 +3353,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	session := sessions.GetOrCreateActive(msg.SessionKey)
-	sessions.UpdateUserMeta(msg.SessionKey, msg.UserName, msg.ChatName)
+	chatID := msg.ChatID
+	if chatID == "" {
+		chatID = msg.ChannelID
+	}
+	sessions.UpdateUserIdentity(msg.SessionKey, UserMeta{
+		UserID: msg.UserID, UserName: msg.UserName, ChatID: chatID,
+		ChatName: msg.ChatName, ChatType: msg.ChatType,
+	})
 	// Ensure an interactiveState entry exists before taking the session lock.
 	// Without this, concurrent messages can observe the session as busy during
 	// startup but still find no state to queue into.
@@ -3368,6 +3389,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		e.interactiveMu.Lock()
 		st, hasSt := e.interactiveStates[interactiveKey]
 		agentAlive := hasSt && st != nil && st.agentSession != nil && st.agentSession.Alive()
+		establishedDead := hasSt && st != nil && st.agentSession != nil && !agentAlive
 		e.interactiveMu.Unlock()
 		if !agentAlive && e.staleLockBreakAfter > 0 {
 			if since, broken := session.BreakStaleLock(e.staleLockBreakAfter); broken {
@@ -3377,7 +3399,6 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 					"interactive_key", interactiveKey,
 					"held_for", heldFor,
 				)
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf("⚠️ 会话卡锁已自动恢复（进程已退出但锁未释放，挂了 %s），本条消息继续处理。", heldFor))
 				// Dump only when a break actually fired: a message arriving
 				// while the lock is busy-but-not-yet-breakable must not churn
 				// megabyte dumps, and only the goroutine that won the break
@@ -3385,6 +3406,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 				dumpStaleLockStacks(msg.SessionKey)
 				if g, ok := session.TryLock(); ok {
 					lockGen = g
+					e.reply(p, msg.ReplyCtx, fmt.Sprintf("⚠️ 会话卡锁已自动恢复（进程已退出但锁未释放，挂了 %s），本条消息继续处理。", heldFor))
 					goto sessionLocked
 				}
 			}
@@ -3399,6 +3421,10 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			// draining the queue so we must start a processor ourselves.
 			if g, ok := session.TryLock(); ok {
 				go e.drainOrphanedQueue(session, sessions, interactiveKey, agent, resolvedWorkspace, g)
+			} else if establishedDead && e.staleLockBreakAfter > 0 {
+				// The foreground turn may already be gone. Wake the queue when
+				// the grace period ends if its lock is still held by this turn.
+				e.scheduleDeadQueueRecovery(session, sessions, st, interactiveKey, agent, resolvedWorkspace)
 			}
 			return
 		}
@@ -3445,6 +3471,50 @@ sessionLocked:
 	)
 
 	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, resolvedWorkspace, msg.SessionKey, lockGen)
+}
+
+// scheduleDeadQueueRecovery covers a dead foreground turn that never releases
+// its lock. The generation and state checks prevent a late timer from breaking
+// a newer turn or a replacement agent session.
+func (e *Engine) scheduleDeadQueueRecovery(session *Session, sessions *SessionManager, expected *interactiveState, interactiveKey string, agent Agent, workspaceDir string) {
+	gen, since := session.busyLockSnapshot()
+	if gen == 0 || since.IsZero() {
+		return
+	}
+	wait := time.Until(since.Add(e.staleLockBreakAfter)) + time.Millisecond
+	if wait < time.Millisecond {
+		wait = time.Millisecond
+	}
+	go func() {
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-timer.C:
+		}
+		e.interactiveMu.Lock()
+		state := e.interactiveStates[interactiveKey]
+		if state != expected {
+			e.interactiveMu.Unlock()
+			return
+		}
+		state.mu.Lock()
+		dead := state.agentSession != nil && !state.agentSession.Alive() && len(state.pendingMessages) > 0
+		var broken bool
+		if dead {
+			_, broken = session.breakStaleLockIfGeneration(e.staleLockBreakAfter, gen)
+		}
+		state.mu.Unlock()
+		e.interactiveMu.Unlock()
+		if !broken {
+			return
+		}
+		slog.Warn("dead session queue lock recovered after grace period", "session", interactiveKey)
+		if nextGen, ok := session.TryLock(); ok {
+			e.drainOrphanedQueue(session, sessions, interactiveKey, agent, workspaceDir, nextGen)
+		}
+	}()
 }
 
 func runMessageAccepted(msg *Message) {
@@ -3801,7 +3871,7 @@ func (e *Engine) handlePendingPermission(p Platform, msg *Message, content strin
 		// through to the normal message handler below.
 		if msg.IsPermissionResponse {
 			slog.Debug("dropping stale permission callback (no interactive state)",
-				"session", msg.SessionKey, "content", content)
+				"session", msg.SessionKey, "content_len", len(content))
 			return true
 		}
 		// Same for an AskUserQuestion option click that arrives after its
@@ -3838,6 +3908,10 @@ found:
 
 		curIdx := pending.CurrentQuestion
 		q := pending.Questions[curIdx]
+		if option, ok := selectedAskQuestionOption(q, content); ok && isCustomAnswerOption(option) {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgAskQuestionCustomInput))
+			return true
+		}
 		answer := e.resolveAskQuestionAnswer(q, content)
 
 		if pending.Answers == nil {
@@ -4006,8 +4080,53 @@ func (e *Engine) askQuestionCallbackLive(sessionKey, content string) bool {
 // the click on to the agent.
 func (e *Engine) dropStaleAskQuestionCallback(p Platform, msg *Message, content string) {
 	slog.Info("dropping stale ask-question callback",
-		"session", msg.SessionKey, "content", content)
+		"session", msg.SessionKey, "content_len", len(content))
 	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgAskQuestionStale))
+}
+
+func selectedAskQuestionOption(q UserQuestion, input string) (UserQuestionOption, bool) {
+	input = strings.TrimSpace(input)
+	if strings.HasPrefix(input, "askq:") {
+		parts := strings.Split(input, ":")
+		input = parts[len(parts)-1]
+	}
+	if q.MultiSelect {
+		for _, part := range strings.FieldsFunc(input, func(r rune) bool { return r == ',' || r == '，' || r == ' ' }) {
+			if index, err := strconv.Atoi(part); err == nil && index >= 1 && index <= len(q.Options) && isCustomAnswerOption(q.Options[index-1]) {
+				return q.Options[index-1], true
+			}
+		}
+	}
+	if index, err := strconv.Atoi(input); err == nil && index >= 1 && index <= len(q.Options) {
+		return q.Options[index-1], true
+	}
+	for _, option := range q.Options {
+		if strings.EqualFold(input, option.Label) {
+			return option, true
+		}
+	}
+	return UserQuestionOption{}, false
+}
+
+func isCustomAnswerOption(option UserQuestionOption) bool {
+	label := strings.ToLower(strings.TrimSpace(option.Label))
+	for {
+		trimmed := label
+		for _, suffix := range []string{"...", "…", ":", "："} {
+			trimmed = strings.TrimSuffix(trimmed, suffix)
+		}
+		if trimmed == label {
+			break
+		}
+		label = strings.TrimSpace(trimmed)
+	}
+	switch label {
+	case "other", "others", "custom", "custom answer", "something else", "type your own",
+		"其他", "其它", "自定义", "自由输入", "その他", "自由入力",
+		"otro", "otra", "personalizado", "personalizada":
+		return true
+	}
+	return false
 }
 
 // resolveAskQuestionAnswer converts user input into answer text.
@@ -4275,6 +4394,7 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	state.replyCtx = msg.ReplyCtx
 	state.currentMessageID = msg.MessageID
 	state.currentTurnUserMessageTimeMs = msg.UserMessageTimeMs
+	state.deliveryLabel = msg.DeliveryLabel
 	state.mu.Unlock()
 	stopRecallMonitor := e.startMessageRecallMonitor(interactiveKey)
 	defer stopRecallMonitor()
@@ -5736,8 +5856,9 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 					}
 				}
 				if event.Error != nil {
-					slog.Error("unsolicited agent error", "error", event.Error, "session", sessionKey)
-					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), event.Error))
+					userMsg, class := e.agentErrorReply(event.Error)
+					slog.Error("unsolicited agent error", "error", event.Error, "error_class", class, "session", sessionKey)
+					e.send(p, replyCtx, userMsg)
 				}
 				state.mu.Lock()
 				alive := agentSession.Alive() && !state.stopped
@@ -5797,7 +5918,24 @@ var agentErrorHandlers = []agentErrorHandler{
 	{"Session not found", MsgSessionNotFound},
 }
 
+func (e *Engine) agentErrorReply(err error) (string, string) {
+	errMsg := err.Error()
+	lower := strings.ToLower(errMsg)
+	if strings.Contains(lower, "thread-store conflict") || strings.Contains(lower, "already has an active writer") {
+		return e.i18n.T(MsgThreadWriterConflict), "thread_writer_conflict"
+	}
+	for _, h := range agentErrorHandlers {
+		if strings.Contains(errMsg, h.contains) {
+			return e.i18n.T(h.msgKey), "known_agent_error"
+		}
+	}
+	return fmt.Sprintf(e.i18n.T(MsgError), errMsg), "agent_error"
+}
+
 func (e *Engine) processInteractiveEvents(state *interactiveState, session *Session, sessions *SessionManager, sessionKey string, msgID string, turnStart time.Time, stopTypingFn func(), sendDone <-chan error, replyCtx any, lockGen uint64) {
+	state.mu.Lock()
+	deliveryLabel := state.deliveryLabel
+	state.mu.Unlock()
 	if msgID != "" {
 		state.mu.Lock()
 		state.currentMessageID = msgID
@@ -5815,6 +5953,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var lastRichCardLen int
 	var cardMessageID any
 	var partialText string
+	var richSegmentStart int
+	richCardText := func() string { return partialText[richSegmentStart:] }
 	triggerAutoCompress := false
 	pendingSend := sendDone
 
@@ -6109,7 +6249,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					})
 				}
 				if cardMessageID == nil {
-					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 					if starter, ok := p.(PreviewStarter); ok {
 						handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card)
 						if err != nil {
@@ -6119,7 +6259,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						}
 					}
 				} else if updater, ok := p.(MessageUpdater); ok {
-					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 					if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
 						slog.Debug("rich card: failed to update thinking card", "platform", p.Name(), "error", err)
 					}
@@ -6192,13 +6332,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				if !e.display.ToolMessages {
 					break
 				}
-				toolSteps = append(toolSteps, ToolStep{
-					Kind:    ToolStepKindTool,
-					Name:    event.ToolName,
-					Summary: truncateIf(event.ToolInput, e.display.ToolMaxLen),
-				})
+				toolSteps = appendToolStep(toolSteps, event.ToolName, truncateIf(formatToolInput(event.ToolName, event.ToolInput), e.display.ToolMaxLen))
 				if cardMessageID == nil {
-					card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 					if starter, ok := p.(PreviewStarter); ok {
 						handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card)
 						if err != nil {
@@ -6208,7 +6344,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						}
 					}
 				} else if updater, ok := p.(MessageUpdater); ok {
-					card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 					if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
 						slog.Debug("rich card: failed to update tool card", "platform", p.Name(), "error", err)
 					}
@@ -6242,10 +6378,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			if e.display.ToolMessages {
 				// --- StreamingCard path ---
 				if streamCard != nil && !streamCard.Failed() {
-					toolInput := event.ToolInput
+					toolInput := formatToolInput(event.ToolName, event.ToolInput)
+					if toolInput != event.ToolInput {
+						toolInput = truncateIf(toolInput, e.display.ToolMaxLen)
+					}
 					var formattedInput string
 					if toolInput == "" {
 						formattedInput = ""
+					} else if strings.EqualFold(event.ToolName, "TodoWrite") && toolInput != event.ToolInput {
+						formattedInput = toolInput
 					} else if strings.Contains(toolInput, "```") {
 						formattedInput = toolInput
 					} else if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
@@ -6286,10 +6427,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				if previewActive {
 					sp.detachPreview() // keep frozen preview visible as permanent message
 				}
-				toolInput := event.ToolInput
+				toolInput := formatToolInput(event.ToolName, event.ToolInput)
+				if toolInput != event.ToolInput {
+					toolInput = truncateIf(toolInput, e.display.ToolMaxLen)
+				}
 				var formattedInput string
 				if toolInput == "" {
 					formattedInput = ""
+				} else if strings.EqualFold(event.ToolName, "TodoWrite") && toolInput != event.ToolInput {
+					formattedInput = toolInput
 				} else if strings.Contains(toolInput, "```") {
 					formattedInput = toolInput
 				} else if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
@@ -6353,7 +6499,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					if hasRichCard {
 						toolSteps = mergeRichToolResult(toolSteps, event, result, e.display.ToolMaxLen)
 						if cardMessageID == nil {
-							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 							if starter, ok := p.(PreviewStarter); ok {
 								handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card)
 								if err != nil {
@@ -6363,7 +6509,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 								}
 							}
 						} else if updater, ok := p.(MessageUpdater); ok {
-							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 							if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
 								slog.Debug("rich card: failed to update tool-result card", "platform", p.Name(), "error", err)
 							}
@@ -6413,7 +6559,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					if len(textParts) == 0 {
 						if hasRichCard {
 							if cardMessageID == nil && !silentHold {
-								card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+								card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 								if starter, ok := p.(PreviewStarter); ok {
 									handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card)
 									if err != nil {
@@ -6437,7 +6583,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 							// here using the accumulated partialText so the card emerges
 							// with the post-prefix content already in body.
 							if cardMessageID == nil {
-								card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+								card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 								if starter, ok := p.(PreviewStarter); ok {
 									handle, err := starter.SendPreviewStart(e.ctx, replyCtx, card)
 									if err != nil {
@@ -6462,7 +6608,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 								// full-card Patch on ErrNotSupported (handle without cardID) or any error.
 								streamed := false
 								if hasStreamer {
-									streamBody := resolveRichCardMarkdown(partialText, false)
+									streamBody := resolveRichCardMarkdown(richCardText(), false)
 									if err := streamer.StreamRichCardText(e.ctx, cardMessageID, streamBody); err == nil {
 										lastRichCardUpdate = time.Now()
 										lastRichCardLen = len(partialText)
@@ -6472,7 +6618,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 									}
 								}
 								if !streamed {
-									card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
+									card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, richCardText(), true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 									if updater, ok := p.(MessageUpdater); ok {
 										if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err == nil {
 											lastRichCardUpdate = time.Now()
@@ -6552,6 +6698,24 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				segmentStart = len(textParts)
 				silentHold = false
+			}
+			// A permission prompt is a visible break in the rich-card stream.
+			// Finish the current card before waiting, then let the continuation
+			// open a new card while retaining partialText for turn history.
+			if hasRichCard {
+				if cardMessageID != nil {
+					card := buildResolvedRichCard(CardStatusDone, "", toolSteps, richCardText(), false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
+					if updater, ok := p.(MessageUpdater); ok {
+						if err := updater.UpdateMessage(e.ctx, cardMessageID, card); err != nil {
+							slog.Debug("rich card: failed to freeze before permission", "platform", p.Name(), "error", err)
+						}
+					}
+				}
+				cardMessageID = nil
+				richSegmentStart = len(partialText)
+				toolSteps = nil
+				lastRichCardUpdate = time.Time{}
+				lastRichCardLen = 0
 			}
 			sp.freeze()
 			if previewActive {
@@ -6827,6 +6991,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 
 			if !isSilent {
+				if deliveryLabel != "" {
+					baseResponse = deliveryLabel + "\n" + baseResponse
+					cleanResponse = deliveryLabel + "\n" + cleanResponse
+				}
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventMessageSent,
 					SessionKey: sessionKey,
@@ -6872,6 +7040,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					statusFooter = footer
 					legacyStatusFooter = footer
 				}
+				footerReason := "built"
+				switch {
+				case !e.replyFooterEnabled:
+					footerReason = "disabled"
+				case statusFooter == "":
+					footerReason = "no_status_segments"
+				case contextUsage == nil:
+					footerReason = "no_usage"
+				}
+				slog.Debug("reply footer status", "built", statusFooter != "", "reason", footerReason,
+					"usage_available", contextUsage != nil, "platform", p.Name())
 			}
 			fullResponse = cleanResponse
 
@@ -6955,8 +7134,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// updates are supported: deleting it leaves a "撤回了一条消息" gray bar
 				// in Lark. Platforms without updates keep the old delete fallback.
 				if hasRichCard && cardMessageID != nil {
-					silentBody := partialText
-					if stripped, ok := stripTrailingSilent(partialText); ok {
+					silentBody := richCardText()
+					if stripped, ok := stripTrailingSilent(silentBody); ok {
 						silentBody = strings.TrimRight(stripped, " \t\r\n")
 					}
 					if silentBody != "" || len(toolSteps) > 0 {
@@ -6979,10 +7158,19 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					cardMessageID = nil
 				}
 				slog.Info("silent reply suppressed", "session", session.ID)
+			} else if hasRichCard && richSegmentStart > 0 && cardMessageID == nil && len(toolSteps) == 0 && strings.TrimPrefix(fullResponse, partialText[:richSegmentStart]) == "" {
+				// The prompt ended the turn. Its pre-permission card was already
+				// finalized, so there is no continuation card to send.
 			} else if hasRichCard {
-				parts := []string{fullResponse}
+				// fullResponse stays complete for history and hooks. A card opened
+				// after a permission prompt renders only its own segment.
+				cardResponse := fullResponse
+				if richSegmentStart > 0 {
+					cardResponse = strings.TrimPrefix(cardResponse, partialText[:richSegmentStart])
+				}
+				parts := []string{cardResponse}
 				if splitter, ok := p.(MarkdownTableSplitter); ok {
-					parts = splitter.SplitMarkdownByTables(fullResponse)
+					parts = splitter.SplitMarkdownByTables(cardResponse)
 				}
 				richStatusFooter := e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir)
 				if legacyStatusFooter != "" {
@@ -7206,6 +7394,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				cardMessageID = nil
 				toolSteps = nil
 				partialText = ""
+				richSegmentStart = 0
 				lastRichCardUpdate = time.Time{}
 				lastRichCardLen = 0
 				queuedRenderer := func(content string) string {
@@ -7299,7 +7488,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.eventsNeedResync = state.agentSession == nil || !state.agentSession.Alive() || state.stopped
 			state.mu.Unlock()
 			if hasRichCard && cardMessageID != nil {
-				errCard := buildResolvedRichCard(CardStatusError, "", toolSteps, partialText, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
+				errCard := buildResolvedRichCard(CardStatusError, "", toolSteps, richCardText(), false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
 				if updater, ok := p.(MessageUpdater); ok {
 					if err := updater.UpdateMessage(e.ctx, cardMessageID, errCard); err != nil {
 						slog.Debug("rich card: failed to update error card", "platform", p.Name(), "error", err)
@@ -7307,21 +7496,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 			if event.Error != nil {
-				errMsg := event.Error.Error()
-				slog.Error("agent error", "error", event.Error)
+				userMsg, class := e.agentErrorReply(event.Error)
+				slog.Error("agent error", "error", event.Error, "error_class", class)
 				e.hooks.Emit(HookEvent{
 					Event:      HookEventError,
 					SessionKey: sessionKey,
 					Platform:   p.Name(),
 					Error:      event.Error.Error(),
 				})
-				userMsg := fmt.Sprintf(e.i18n.T(MsgError), errMsg)
-				for _, h := range agentErrorHandlers {
-					if strings.Contains(errMsg, h.contains) {
-						userMsg = e.i18n.T(h.msgKey)
-						break
-					}
-				}
 				e.send(p, replyCtx, userMsg)
 			}
 			// Only drop queued messages if the agent session is dead.
@@ -7417,7 +7599,7 @@ func mergeRichToolResult(steps []ToolStep, event Event, result string, maxLen in
 		}
 	}
 	if idx == -1 {
-		summary := strings.TrimSpace(event.ToolInput)
+		summary := strings.TrimSpace(formatToolInput(toolName, event.ToolInput))
 		if summary != "" {
 			summary = truncateIf(summary, maxLen)
 		}
@@ -7436,7 +7618,7 @@ func mergeRichToolResult(steps []ToolStep, event Event, result string, maxLen in
 		steps[idx].Kind = ToolStepKindTool
 	}
 	if strings.TrimSpace(steps[idx].Summary) == "" && strings.TrimSpace(event.ToolInput) != "" {
-		steps[idx].Summary = truncateIf(strings.TrimSpace(event.ToolInput), maxLen)
+		steps[idx].Summary = truncateIf(strings.TrimSpace(formatToolInput(toolName, event.ToolInput)), maxLen)
 	}
 	steps[idx].Result = result
 	steps[idx].Status = strings.TrimSpace(event.ToolStatus)
@@ -7560,6 +7742,9 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 		}
 
 		slog.Info("processing queued message", "session", sessionKey)
+		state.mu.Lock()
+		state.deliveryLabel = ""
+		state.mu.Unlock()
 		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx, lockGen)
 	}
 }
@@ -8041,6 +8226,9 @@ func (e *Engine) handleWorkspaceCommand(p Platform, msg *Message, args []string)
 				name = chID
 			}
 			sb.WriteString(fmt.Sprintf("• #%s → `%s`\n", name, b.Workspace))
+			for _, path := range b.PreviousWorkspaces {
+				fmt.Fprintf(&sb, "  ↳ `%s`\n", path)
+			}
 		}
 		e.reply(p, msg.ReplyCtx, sb.String())
 	}
@@ -8162,7 +8350,19 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 	e.interactiveMu.Lock()
 	expected := e.interactiveStates[interactiveKey]
 	e.interactiveMu.Unlock()
+	var previousBusy bool
+	var queuedDropped int
+	if expected != nil {
+		expected.mu.Lock()
+		busySession := expected.busySession
+		queuedDropped = len(expected.pendingMessages)
+		expected.mu.Unlock()
+		previousBusy = busySession != nil && busySession.Busy()
+	}
 	e.cleanupInteractiveStateForNew(interactiveKey, expected)
+	e.closingMu.Lock()
+	closeUnconfirmed := e.unsafeResume[interactiveKey]
+	e.closingMu.Unlock()
 	slog.Info("cmdNew: cleanup done, creating new session", "session_key", msg.SessionKey)
 
 	name := ""
@@ -8170,11 +8370,25 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 		name = strings.Join(args, " ")
 	}
 	sessions.NewSession(msg.SessionKey, name)
+	reply := e.i18n.T(MsgNewSessionCreated)
 	if name != "" {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgNewSessionCreatedName), name))
-	} else {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgNewSessionCreated))
+		reply = e.i18n.Tf(MsgNewSessionCreatedName, name)
 	}
+	if previousBusy {
+		if closeUnconfirmed {
+			reply += "\n" + e.i18n.T(MsgPreviousTaskUnconfirmed)
+		} else {
+			reply += "\n" + e.i18n.T(MsgPreviousTaskStopped)
+		}
+	}
+	if queuedDropped > 0 {
+		reply += "\n" + e.i18n.Tf(MsgQueuedMessagesDropped, queuedDropped)
+	}
+	if previousBusy || queuedDropped > 0 {
+		slog.Info("cmdNew: previous work reset", "session_key", msg.SessionKey, "was_busy", previousBusy,
+			"close_unconfirmed", closeUnconfirmed, "queued_dropped", queuedDropped)
+	}
+	e.reply(p, msg.ReplyCtx, reply)
 }
 
 // applySessionFilter narrows agent sessions to those the given sessionKey may
@@ -8235,6 +8449,33 @@ func filterOwnedSessions(sessions []AgentSessionInfo, known map[string]struct{})
 
 const listPageSize = 20
 
+const localSessionPrefix = "local-session:"
+
+// listCommandSessions includes named sessions created by /new before the agent
+// has produced a transcript. The agent cannot list those sessions yet.
+func (e *Engine) listCommandSessions(agent Agent, sessions *SessionManager, sessionKey string) ([]AgentSessionInfo, error) {
+	agentSessions, err := agent.ListSessions(e.ctx)
+	if err != nil {
+		return nil, err
+	}
+	agentSessions = e.applySessionFilter(agentSessions, sessions, sessionKey)
+	for _, local := range sessions.ListSessions(sessionKey) {
+		local.mu.Lock()
+		id, name, agentID := local.ID, local.Name, local.AgentSessionID
+		hadTranscript := len(local.PastAgentSessionIDs) > 0
+		count, modified := len(local.History), local.UpdatedAt
+		local.mu.Unlock()
+		if agentID != "" || hadTranscript || (name == "default" && count == 0) {
+			continue
+		}
+		agentSessions = append(agentSessions, AgentSessionInfo{
+			ID: localSessionPrefix + id, Summary: name,
+			MessageCount: count, ModifiedAt: modified,
+		})
+	}
+	return agentSessions, nil
+}
+
 // dirCardPageSize is the max directory history rows per card page (Feishu / other card UIs).
 const dirCardPageSize = 20
 
@@ -8246,12 +8487,11 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 	}
 
 	if !supportsCards(p) {
-		agentSessions, err := agent.ListSessions(e.ctx)
+		agentSessions, err := e.listCommandSessions(agent, sessions, msg.SessionKey)
 		if err != nil {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgListError), err))
 			return
 		}
-		agentSessions = e.applySessionFilter(agentSessions, sessions, msg.SessionKey)
 		if len(agentSessions) == 0 {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgListEmpty))
 			return
@@ -8289,7 +8529,7 @@ func (e *Engine) cmdList(p Platform, msg *Message, args []string) {
 		for i := start; i < end; i++ {
 			s := agentSessions[i]
 			marker := "◻"
-			if s.ID == activeAgentID {
+			if s.ID == activeAgentID && activeAgentID != "" || s.ID == localSessionPrefix+activeSession.ID {
 				marker = "▶"
 			}
 			displayName := sessions.GetSessionName(s.ID)
@@ -8343,13 +8583,11 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 		return
 	}
-	agentSessions, err := agent.ListSessions(e.ctx)
+	agentSessions, err := e.listCommandSessions(agent, sessions, msg.SessionKey)
 	if err != nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
 		return
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions, msg.SessionKey)
-
 	matched := e.matchSession(agentSessions, sessions, query)
 	if matched == nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgSwitchNoMatch), query))
@@ -8359,6 +8597,14 @@ func (e *Engine) cmdSwitch(p Platform, msg *Message, args []string) {
 	slog.Info("cmdSwitch: cleaning up old session", "session_key", msg.SessionKey)
 	e.cleanupInteractiveState(interactiveKey)
 	slog.Info("cmdSwitch: cleanup done", "session_key", msg.SessionKey)
+	if localID, local := strings.CutPrefix(matched.ID, localSessionPrefix); local {
+		if _, err := sessions.SwitchSession(msg.SessionKey, localID); err != nil {
+			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+			return
+		}
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgSwitchSuccess, matched.Summary, localID, matched.MessageCount))
+		return
+	}
 
 	// NOTE: Do NOT call session.ClearHistory() on the returned Session.
 	// When switching back to a known agent_session_id, SwitchToAgentSession
@@ -8415,10 +8661,19 @@ func (e *Engine) matchSession(sessions []AgentSessionInfo, manager *SessionManag
 			return &sessions[i]
 		}
 	}
+	for i := range sessions {
+		if strings.HasPrefix(sessions[i].ID, localSessionPrefix) && strings.EqualFold(sessions[i].Summary, query) {
+			return &sessions[i]
+		}
+	}
 
 	// 3. Session ID prefix match
 	for i := range sessions {
-		if strings.HasPrefix(sessions[i].ID, query) {
+		id := sessions[i].ID
+		if localID, local := strings.CutPrefix(id, localSessionPrefix); local {
+			id = localID
+		}
+		if strings.HasPrefix(id, query) {
 			return &sessions[i]
 		}
 	}
@@ -8499,6 +8754,8 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 		} else if usage := e.replyFooterUsageText(session, agent); usage != "" {
 			parts = append(parts, usage)
 			hasStatus = true
+		} else if hasStatus {
+			parts = append(parts, "ctx: ?")
 		}
 	}
 	if e.showWorkdirIndicator {
@@ -8588,6 +8845,7 @@ func buildClaudeStatusLineFooter(model, effort string, usage *ContextUsage) stri
 	if effort != "" {
 		parts = append(parts, effort)
 	}
+	hasContext := false
 	if usage != nil {
 		var counts []string
 		if usage.OutputTokens > 0 {
@@ -8616,8 +8874,12 @@ func buildClaudeStatusLineFooter(model, effort string, usage *ContextUsage) stri
 					pct = 100
 				}
 				parts = append(parts, fmt.Sprintf("ctx %d%%", pct))
+				hasContext = true
 			}
 		}
+	}
+	if len(parts) > 0 && !hasContext {
+		parts = append(parts, "ctx: ?")
 	}
 	return strings.Join(parts, " · ")
 }
@@ -13377,6 +13639,9 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 				if opt.Description != "" {
 					body += " — " + opt.Description
 				}
+				if isCustomAnswerOption(opt) {
+					body += " — " + e.i18n.T(MsgAskQuestionCustomInput)
+				}
 				body += "\n"
 			}
 			cb.Markdown(body)
@@ -13400,6 +13665,10 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 				desc := opt.Label
 				if opt.Description != "" {
 					desc += " — " + opt.Description
+				}
+				if isCustomAnswerOption(opt) {
+					cb.Markdown("**" + desc + "** — " + e.i18n.T(MsgAskQuestionCustomInput))
+					continue
 				}
 				answerData := answerValue(i + 1)
 				cb.Markdown("**" + desc + "**")
@@ -13437,7 +13706,7 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		}
 		hasDesc := false
 		for _, opt := range q.Options {
-			if opt.Description != "" {
+			if opt.Description != "" || isCustomAnswerOption(opt) {
 				hasDesc = true
 				break
 			}
@@ -13455,7 +13724,14 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		}
 		var rows [][]ButtonOption
 		for i, opt := range q.Options {
+			if isCustomAnswerOption(opt) {
+				continue
+			}
 			rows = append(rows, []ButtonOption{{Text: opt.Label, Data: answerValue(i + 1)}})
+		}
+		if len(rows) != len(q.Options) {
+			textBuf.WriteString("\n")
+			textBuf.WriteString(e.i18n.T(MsgAskQuestionCustomInput))
 		}
 		if err := e.waitOutgoing(p); err != nil {
 			slog.Warn("sendAskQuestionPrompt: outgoing wait cancelled", "platform", p.Name(), "error", err)
@@ -13486,6 +13762,10 @@ func (e *Engine) sendAskQuestionPrompt(p Platform, replyCtx any, questions []Use
 		if opt.Description != "" {
 			sb.WriteString(" — ")
 			sb.WriteString(opt.Description)
+		}
+		if isCustomAnswerOption(opt) {
+			sb.WriteString(" — ")
+			sb.WriteString(e.i18n.T(MsgAskQuestionCustomInput))
 		}
 		sb.WriteString("\n")
 	}
@@ -14881,11 +15161,10 @@ func (e *Engine) renderModeCard(sessionKey string) *Card {
 
 func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 	agent, sessions := e.sessionContextForKey(sessionKey)
-	agentSessions, err := agent.ListSessions(e.ctx)
+	agentSessions, err := e.listCommandSessions(agent, sessions, sessionKey)
 	if err != nil {
 		return nil, fmt.Errorf(e.i18n.T(MsgListError), err)
 	}
-	agentSessions = e.applySessionFilter(agentSessions, sessions, sessionKey)
 	if len(agentSessions) == 0 {
 		return e.simpleCard(e.i18n.Tf(MsgCardTitleSessions, userVisibleAgentName(agent), 0), "turquoise", e.i18n.T(MsgListEmpty)), nil
 	}
@@ -14917,7 +15196,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 	for i := start; i < end; i++ {
 		s := agentSessions[i]
 		marker := "◻"
-		if s.ID == activeAgentID {
+		if s.ID == activeAgentID && activeAgentID != "" || s.ID == localSessionPrefix+activeSession.ID {
 			marker = "▶"
 		}
 		displayName := sessions.GetSessionName(s.ID)
@@ -14934,7 +15213,7 @@ func (e *Engine) renderListCard(sessionKey string, page int) (*Card, error) {
 			}
 		}
 		btnType := "default"
-		if s.ID == activeAgentID {
+		if s.ID == activeAgentID && activeAgentID != "" || s.ID == localSessionPrefix+activeSession.ID {
 			btnType = "primary"
 		}
 		cb.ListItemBtn(

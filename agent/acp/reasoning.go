@@ -16,17 +16,17 @@ var _ core.ResumeReasoningApplier = (*Agent)(nil)
 // wipe a previous choice. With no list yet, the trimmed value is
 // stored and checked again when the session starts.
 func (a *Agent) SetReasoningEffort(effort string) {
-	raw := strings.TrimSpace(effort)
-	if raw == "" {
+	trimmed := strings.TrimSpace(effort)
+	if trimmed == "" {
 		a.mu.Lock()
 		a.reasoningEffort = ""
 		a.mu.Unlock()
 		slog.Info("acp: reasoning effort cleared for future sessions")
 		return
 	}
-	canonical, ok := a.matchEffort(raw)
+	canonical, ok := a.matchEffort(trimmed)
 	if !ok {
-		slog.Warn("acp: ignoring unknown reasoning_effort", "value", raw)
+		slog.Warn("acp: ignoring unknown reasoning_effort", "value", trimmed)
 		return
 	}
 	a.mu.Lock()

@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"github.com/chenhg5/cc-connect/config"
@@ -488,7 +489,7 @@ func (p *Platform) readLoop(conn *websocket.Conn, ctx context.Context) error {
 
 // handleFrame dispatches incoming frames.
 func (p *Platform) handleFrame(frame wsFrame) error {
-	slog.Debug("wps-agentspace: received frame", "event", frame.Event, "data", string(frame.Data))
+	slog.Debug("wps-agentspace: received frame", "event", frame.Event, "data_bytes", len(frame.Data))
 
 	switch frame.Event {
 	case "pong":
@@ -598,7 +599,7 @@ func (p *Platform) handleUserMessage(data messageData) error {
 		content = content + "\n\n[附件]\n" + strings.Join(mediaURLs, "\n")
 	}
 
-	slog.Info("wps-agentspace: received message", "chat_id", chatID, "content", truncate(content, 100), "media_count", len(mediaURLs))
+	slog.Info("wps-agentspace: received message", "chat_id", chatID, "content_bytes", len(content), "media_count", len(mediaURLs))
 
 	// Send typing indicator
 	p.sendTyping(chatID)
@@ -1174,10 +1175,13 @@ func generateUUID() string {
 	return uuid.NewString()
 }
 
-// truncate truncates a string to maxLen characters.
+// truncate truncates a string to maxLen bytes without splitting a rune.
 func truncate(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
+	}
+	for maxLen > 0 && !utf8.RuneStart(s[maxLen]) {
+		maxLen--
 	}
 	return s[:maxLen] + "..."
 }

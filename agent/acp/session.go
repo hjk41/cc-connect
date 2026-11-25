@@ -597,7 +597,7 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	s.maybeAbsorbSessionInfoUpdate(params)
 	s.maybeAbsorbUsageUpdate(params)
 	sid := s.currentACPSessionID()
-	slog.Debug("acp: session/update", "session_id", sid, "params", string(params))
+	slog.Debug("acp: session/update", "session_id", sid, "params_bytes", len(params))
 	if s.replaying.Load() {
 		return
 	}
@@ -729,7 +729,7 @@ func (s *acpSession) cacheToolCallInput(params json.RawMessage) {
 		s.evictToolInputCacheIfNeededLocked()
 		s.toolInputByID[tc.ToolCallID] = input
 		s.toolInputMu.Unlock()
-		slog.Info("acp: cached tool call input", "toolCallId", tc.ToolCallID, "input", input, "update", head.SessionUpdate)
+		slog.Info("acp: cached tool call input", "toolCallId", tc.ToolCallID, "input_bytes", len(input), "update", head.SessionUpdate)
 	}
 }
 
@@ -784,7 +784,7 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 		_ = s.tr.respondError(id, -32602, "invalid params")
 		return
 	}
-	slog.Debug("acp: permission request raw params", "params", string(params))
+	slog.Debug("acp: permission request", "params_bytes", len(params))
 	reqKey := jsonIDKey(id)
 
 	s.permMu.Lock()
@@ -812,7 +812,7 @@ func (s *acpSession) handlePermissionRequest(id json.RawMessage, params json.Raw
 			return
 		}
 
-		slog.Info("acp: permission request", "request_id", reqKey, "tool", toolName, "input", toolInput)
+		slog.Info("acp: permission request", "request_id", reqKey, "tool", toolName, "input_bytes", len(toolInput))
 		s.emit(core.Event{
 			Type:         core.EventPermissionRequest,
 			RequestID:    reqKey,

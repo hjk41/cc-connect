@@ -50,7 +50,9 @@ func TestExecuteCronShell_LongOutputSplitsWithoutTruncation(t *testing.T) {
 		Description: "morning digest",
 		Silent:      &silent,
 	}
-	// On Windows cmd/powershell cannot parse POSIX inline env vars; write a wrapper script.
+	// On Windows cmd/powershell cannot parse POSIX inline env vars; write a
+	// wrapper script. Cron execs run via powershell -Command, where a bare
+	// quoted path evaluates as a string literal, so invoke it through cmd.
 	scriptDir := t.TempDir()
 	if os.PathSeparator == '\\' {
 		bat := filepath.Join(scriptDir, "run.bat")
@@ -58,7 +60,7 @@ func TestExecuteCronShell_LongOutputSplitsWithoutTruncation(t *testing.T) {
 		if err := os.WriteFile(bat, []byte(content), 0o755); err != nil {
 			t.Fatalf("write bat: %v", err)
 		}
-		job.Exec = fmt.Sprintf("%q", bat)
+		job.Exec = fmt.Sprintf("cmd /c \"%s\"", bat)
 	}
 
 	if err := store.Add(job); err != nil {
