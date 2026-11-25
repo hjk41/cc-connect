@@ -189,6 +189,75 @@ type resultAgentSession struct {
 	sentPrompts []string
 }
 
+type issue1959ConflictSession struct{ *resultAgentSession }
+
+type issue1959CloseErrorSession struct{ *resultAgentSession }
+
+func (s *issue1959CloseErrorSession) Close() error { return errors.New("close could not be confirmed") }
+
+func (s *issue1959ConflictSession) Send(_ string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.events <- Event{Type: EventError, Error: errors.New("thread-store conflict: thread already has an active writer at /tmp/PRIVATE_PATH_SENTINEL")}
+	return nil
+}
+
+func TestIssue1959_ThreadWriterConflictDoesNotExposeRawError(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	sess := &issue1959ConflictSession{newResultAgentSession("")}
+	e := NewEngine("test", &resultAgent{session: sess}, []Platform{p}, "", LangEnglish)
+	defer e.cancel()
+	e.ReceiveMessage(p, &Message{SessionKey: "plain:chat:user", Content: "hello", ReplyCtx: "ctx"})
+	sent := waitForPlatformSend(p, 1, 2*time.Second)
+	if len(sent) != 1 || strings.Contains(sent[0], "PRIVATE_PATH_SENTINEL") || !strings.Contains(strings.ToLower(sent[0]), "conversation") {
+		t.Fatalf("conflict reply should be actionable without internal path: %q", sent)
+	}
+}
+
+func TestIssue1959_NewReportsStoppedTurnAndDroppedQueue(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &resultAgent{session: newResultAgentSession("")}, []Platform{p}, "", LangEnglish)
+	defer e.cancel()
+	key := "plain:chat:user"
+	session := e.sessions.GetOrCreateActive(key)
+	if _, ok := session.TryLock(); !ok {
+		t.Fatal("failed to mark the old turn busy")
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = &interactiveState{
+		agentSession: newResultAgentSession(""), busySession: session,
+		platform: p, replyCtx: "ctx",
+		pendingMessages: []queuedMessage{{platform: p, replyCtx: "queued-ctx", content: "queued"}},
+	}
+	e.interactiveMu.Unlock()
+	e.cmdNew(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, nil)
+	sent := strings.Join(p.getSent(), "\n")
+	if !strings.Contains(sent, "Previous task") || !strings.Contains(sent, "queued message") {
+		t.Fatalf("/new did not report old turn and queue outcome: %q", sent)
+	}
+}
+
+func TestIssue1959_NewDoesNotClaimFailedCloseStopped(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &resultAgent{session: newResultAgentSession("")}, []Platform{p}, "", LangEnglish)
+	defer e.cancel()
+	key := "plain:chat:close-failure"
+	session := e.sessions.GetOrCreateActive(key)
+	if _, ok := session.TryLock(); !ok {
+		t.Fatal("failed to mark the old turn busy")
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = &interactiveState{
+		agentSession: &issue1959CloseErrorSession{newResultAgentSession("")},
+		busySession:  session, platform: p, replyCtx: "ctx",
+	}
+	e.interactiveMu.Unlock()
+	e.cmdNew(p, &Message{SessionKey: key, ReplyCtx: "ctx"}, nil)
+	sent := p.getSent()
+	final := sent[len(sent)-1]
+	if !strings.Contains(final, "could not be confirmed") || strings.Contains(final, "Previous task stopped during") {
+		t.Fatalf("/new claimed an unconfirmed close stopped: %q", final)
+	}
+}
+
 func newResultAgentSession(result string) *resultAgentSession {
 	return &resultAgentSession{
 		events: make(chan Event, 1),
@@ -13712,6 +13781,31 @@ func TestWorkspace_Bind_Unbind_List(t *testing.T) {
 	}
 }
 
+func TestWorkspace_ListShowsPreviouslyBoundProjects(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	baseDir := t.TempDir()
+	for _, name := range []string{"project-a", "project-b"} {
+		if err := os.MkdirAll(filepath.Join(baseDir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e.SetMultiWorkspace(baseDir, filepath.Join(t.TempDir(), "bindings.json"))
+	for _, name := range []string{"project-a", "project-b"} {
+		msg := &Message{SessionKey: "test:ch1:user1", Content: "/workspace bind " + name, ReplyCtx: "ctx"}
+		e.handleCommand(p, msg, msg.Content)
+	}
+	p.clearSent()
+	msg := &Message{SessionKey: "test:ch1:user1", Content: "/workspace list", ReplyCtx: "ctx"}
+	e.handleCommand(p, msg, msg.Content)
+	got := strings.Join(p.getSent(), "\n")
+	for _, name := range []string{"project-a", "project-b"} {
+		if !strings.Contains(got, name) {
+			t.Fatalf("/workspace list omitted %s: %q", name, got)
+		}
+	}
+}
+
 func TestWorkspace_Bind_NonexistentDir(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
@@ -15134,7 +15228,7 @@ func TestEngine_AddPlatform_Multiple(t *testing.T) {
 	}
 }
 
-func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
+func TestIssue1959_CronResultIdentifiesJob(t *testing.T) {
 	dir := t.TempDir()
 	store, err := NewCronStore(dir)
 	if err != nil {
@@ -15179,8 +15273,8 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 	if sent[0] != "⏰ Daily summary" {
 		t.Fatalf("sent[0] = %q, want cron start notice", sent[0])
 	}
-	if sent[1] != "cron complete" {
-		t.Fatalf("sent[1] = %q, want final result", sent[1])
+	if !strings.Contains(sent[1], "cron complete") || !strings.Contains(sent[1], "Daily summary") || !strings.Contains(sent[1], "job-1") {
+		t.Fatalf("sent[1] = %q, want job identity and final result", sent[1])
 	}
 
 	if got := len(e.sessions.ListSessions("discord:thread-fresh")); got != 0 {
@@ -15199,6 +15293,35 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 
 	if len(agentSession.sentPrompts) != 1 || !strings.Contains(agentSession.sentPrompts[0], "summarize activity") {
 		t.Fatalf("agent prompts = %#v, want prompt containing summarize activity", agentSession.sentPrompts)
+	}
+}
+
+func TestIssue1959_CronLabelDoesNotExposePrompt(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	e := NewEngine("test", &resultAgent{session: newResultAgentSession("done")}, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+	silent := true
+	job := &CronJob{ID: "job-private", SessionKey: "discord:channel:user", Prompt: "SECRET_PROMPT_SENTINEL", Silent: &silent}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatal(err)
+	}
+	sent := platform.getSent()
+	if len(sent) != 1 || !strings.Contains(sent[0], job.ID) || strings.Contains(sent[0], job.Prompt) {
+		t.Fatalf("cron result label should include ID without exposing prompt: %q", sent)
+	}
+}
+
+func TestIssue1959_CronShellResultIdentifiesJob(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	e := NewEngine("test", &stubAgent{}, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+	job := &CronJob{ID: "shell-job-1", SessionKey: "discord:channel:user", Exec: "printf done", WorkDir: t.TempDir()}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatal(err)
+	}
+	sent := platform.getSent()
+	if len(sent) < 2 || !strings.Contains(sent[len(sent)-1], job.ID) || !strings.Contains(sent[len(sent)-1], "done") {
+		t.Fatalf("shell result lacks job identity: %q", sent)
 	}
 }
 
@@ -15336,7 +15459,7 @@ func TestExecuteCronJob_ShellResultSentAsNewMessage(t *testing.T) {
 		t.Fatalf("preview starts = %d, want 1", len(starts))
 	}
 	last := edits[len(edits)-1]
-	if last != "⏰ ✅ `sleep 1; echo shell-result`" {
+	if last != "⏰ ✅ `sleep 1; echo shell-result [job-shell]`" {
 		t.Fatalf("last preview edit = %q, want compact terminal status without output", last)
 	}
 }

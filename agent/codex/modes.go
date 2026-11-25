@@ -56,8 +56,8 @@ var codexModes = []codexModeSpec{
 	},
 }
 
-func resolveCodexMode(raw string) (codexModeSpec, error) {
-	key := strings.ToLower(strings.TrimSpace(raw))
+func resolveCodexMode(value string) (codexModeSpec, error) {
+	key := strings.ToLower(strings.TrimSpace(value))
 	if key == "" { // Omitted configuration retains the safe default.
 		key = "suggest"
 	}
@@ -71,7 +71,7 @@ func resolveCodexMode(raw string) (codexModeSpec, error) {
 			}
 		}
 	}
-	return codexModeSpec{}, fmt.Errorf("codex: unknown permission mode %q", raw)
+	return codexModeSpec{}, fmt.Errorf("codex: unknown permission mode %q", value)
 }
 
 func resolveCodexBackendMode(mode, backend string) (codexModeSpec, error) {

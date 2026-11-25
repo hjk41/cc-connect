@@ -429,7 +429,7 @@ func main() {
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
 		// Wire display settings including show_context_indicator and reply_footer
 		// Global [display] config can be overridden by project-level settings
-		_, _, _, _, _, showCtx, showFooter, _ := config.EffectiveDisplay(cfg, &proj)
+		mode, thinkingMessages, toolMessages, _, _, showCtx, showFooter, _ := config.EffectiveDisplay(cfg, &proj)
 		engine.SetShowContextIndicator(showCtx)
 		showWorkdir := true
 		if proj.ShowWorkdirIndicator != nil {
@@ -437,6 +437,18 @@ func main() {
 		}
 		engine.SetShowWorkdirIndicator(showWorkdir)
 		engine.SetReplyFooterEnabled(showFooter)
+		var statusFooterPlatforms []string
+		for _, p := range platforms {
+			if _, ok := p.(core.StatusFooterSender); ok {
+				statusFooterPlatforms = append(statusFooterPlatforms, p.Name())
+			}
+		}
+		slog.Info("effective display settings",
+			"project", proj.Name, "mode", mode,
+			"thinking_messages", thinkingMessages, "tool_messages", toolMessages,
+			"reply_footer", showFooter, "show_context_indicator", showCtx,
+			"show_workdir_indicator", showWorkdir,
+			"status_footer_platforms", statusFooterPlatforms)
 		engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")
 		engine.SetFilterExternalSessions(proj.FilterExternalSessions != nil && *proj.FilterExternalSessions)
 		engine.SetBaseWorkDir(workDir)
@@ -1115,7 +1127,9 @@ func main() {
 			bridgeSrv.RegisterEngine(cfg.Projects[i].Name, e, bp)
 			e.AddPlatform(bp)
 		}
-		bridgeSrv.Start()
+		if err := bridgeSrv.Start(); err != nil {
+			slog.Error("bridge: failed to start server", "addr", fmt.Sprintf(":%d", port), "error", err)
+		}
 	}
 
 	// Start webhook server if enabled

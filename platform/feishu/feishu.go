@@ -567,7 +567,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if raw, ok := opts["image_batch_window_ms"]; ok {
 		ms, err := coerceMilliseconds(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%s: invalid image_batch_window_ms %v: %w", name, raw, err)
+			return nil, fmt.Errorf("%s: invalid image_batch_window_ms: %w", name, err)
 		}
 		if ms < 0 {
 			return nil, fmt.Errorf("%s: image_batch_window_ms must be >= 0, got %d", name, ms)
@@ -600,7 +600,7 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if raw, ok := opts["resource_chunk_size_bytes"]; ok {
 		n, err := coerceMilliseconds(raw)
 		if err != nil {
-			return nil, fmt.Errorf("%s: invalid resource_chunk_size_bytes %v: %w", name, raw, err)
+			return nil, fmt.Errorf("%s: invalid resource_chunk_size_bytes: %w", name, err)
 		}
 		if n > 0 {
 			resourceChunkSize = n
@@ -624,10 +624,10 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		mermaidRenderer = strings.TrimSpace(v)
 	}
 	mermaidTimeout := mermaidDefaultTimeout
-	if raw, ok := opts["mermaid_timeout_secs"]; ok {
-		secs, err := coerceMilliseconds(raw)
+	if v, ok := opts["mermaid_timeout_secs"]; ok {
+		secs, err := coerceMilliseconds(v)
 		if err != nil {
-			return nil, fmt.Errorf("%s: invalid mermaid_timeout_secs %v: %w", name, raw, err)
+			return nil, fmt.Errorf("%s: invalid mermaid_timeout_secs %v: %w", name, v, err)
 		}
 		if secs < 1 || secs > 60 {
 			return nil, fmt.Errorf("%s: mermaid_timeout_secs must be between 1 and 60, got %d", name, secs)
@@ -6489,7 +6489,7 @@ func (p *Platform) parsePostBody(raw string) *postLang {
 	}
 	var langMap map[string]postLang
 	if err := json.Unmarshal([]byte(raw), &langMap); err != nil || len(langMap) == 0 {
-		slog.Error(p.tag()+": failed to parse post content", "raw", raw)
+		slog.Error(p.tag()+": failed to parse post content", "raw_bytes", len(raw))
 		return nil
 	}
 	keys := make([]string, 0, len(langMap))
