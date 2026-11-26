@@ -1,6 +1,7 @@
 package feishu
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -45,5 +46,33 @@ func TestProgressCards_PanelsStayCollapsed(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Regression for Feishu code=230099/11311 markdown parse errors: arbitrary
+// tool input/output must never embed raw nested Markdown fences into the
+// progress card. The outer fence is safe only because inner fence runs are
+// neutralized before rendering.
+func TestProgressToolFormatting_NeutralizesNestedCodeFences(t *testing.T) {
+	raw := "python3 - <<'PY'\nprint('before')\n```\nprint('inner')\n```\n<xml><a href=\"x\">text</a><!CDATA[(.*?)\\]\\]>\nPY"
+	input := formatProgressToolInput("Bash", raw)
+	if !strings.HasPrefix(input, "```bash\n") {
+		t.Fatalf("bash input should be fenced as bash: %q", input)
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(input, "```bash\n"), "\n```")
+	if strings.Contains(body, "```") {
+		t.Fatalf("tool input left a nested fence marker in the card: %q", body)
+	}
+	if strings.Contains(body, "<a") || strings.Contains(body, "</a>") || strings.Contains(body, "<!CDATA") {
+		t.Fatalf("tool input left HTML-like tag openers in the card: %q", body)
+	}
+
+	result := formatProgressToolResult(raw)
+	if !strings.HasPrefix(result, "```\n") {
+		t.Fatalf("tool result should always be fenced: %q", result)
+	}
+	body = strings.TrimSuffix(strings.TrimPrefix(result, "```\n"), "\n```")
+	if strings.Contains(body, "```") {
+		t.Fatalf("tool result left a nested fence marker in the card: %q", body)
 	}
 }

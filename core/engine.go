@@ -6388,16 +6388,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					} else if strings.EqualFold(event.ToolName, "TodoWrite") && toolInput != event.ToolInput {
 						formattedInput = toolInput
 					} else if strings.Contains(toolInput, "```") {
-						formattedInput = toolInput
+						formattedInput = SafeMarkdownCodeFence(toolInput, toolCodeLang(event.ToolName, toolInput))
 					} else if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
-						lang := toolCodeLang(event.ToolName, toolInput)
-						formattedInput = fmt.Sprintf("```%s\n%s\n```", lang, toolInput)
+						formattedInput = SafeMarkdownCodeFence(toolInput, toolCodeLang(event.ToolName, toolInput))
 					} else {
 						switch event.ToolName {
 						case "shell", "run_shell_command", "Bash":
-							formattedInput = fmt.Sprintf("```bash\n%s\n```", toolInput)
+							formattedInput = SafeMarkdownCodeFence(toolInput, "bash")
 						default:
-							formattedInput = fmt.Sprintf("`%s`", toolInput)
+							formattedInput = SafeMarkdownInlineCode(toolInput)
 						}
 					}
 					cardToolCalls = append(cardToolCalls, cardToolEntry{
@@ -6437,16 +6436,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				} else if strings.EqualFold(event.ToolName, "TodoWrite") && toolInput != event.ToolInput {
 					formattedInput = toolInput
 				} else if strings.Contains(toolInput, "```") {
-					formattedInput = toolInput
+					formattedInput = SafeMarkdownCodeFence(toolInput, toolCodeLang(event.ToolName, toolInput))
 				} else if strings.Contains(toolInput, "\n") || utf8.RuneCountInString(toolInput) > 200 {
-					lang := toolCodeLang(event.ToolName, toolInput)
-					formattedInput = fmt.Sprintf("```%s\n%s\n```", lang, toolInput)
+					formattedInput = SafeMarkdownCodeFence(toolInput, toolCodeLang(event.ToolName, toolInput))
 				} else {
 					switch event.ToolName {
 					case "shell", "run_shell_command", "Bash":
-						formattedInput = fmt.Sprintf("```bash\n%s\n```", toolInput)
+						formattedInput = SafeMarkdownCodeFence(toolInput, "bash")
 					default:
-						formattedInput = fmt.Sprintf("`%s`", toolInput)
+						formattedInput = SafeMarkdownInlineCode(toolInput)
 					}
 				}
 				toolMsg := fmt.Sprintf(e.i18n.T(MsgTool), toolCount, event.ToolName, formattedInput)
@@ -17719,7 +17717,7 @@ func (e *Engine) formatToolResultEventFallback(toolName, result, status string, 
 		lines = append(lines, fmt.Sprintf("🔢 %s: %d", exitLabel, *exitCode))
 	}
 	if strings.TrimSpace(result) != "" {
-		lines = append(lines, "```text\n"+strings.TrimSpace(result)+"\n```")
+		lines = append(lines, SafeMarkdownCodeFence(strings.TrimSpace(result), "text"))
 	} else {
 		lines = append(lines, "_"+noOutput+"_")
 	}

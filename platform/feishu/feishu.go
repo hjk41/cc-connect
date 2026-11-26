@@ -5516,7 +5516,7 @@ func normalizeProgressItems(payload *core.ProgressCardPayload) []core.ProgressCa
 }
 
 func inlineCodeText(s string) string {
-	return strings.ReplaceAll(strings.TrimSpace(s), "`", "'")
+	return core.NeutralizeHTMLTagOpeners(strings.ReplaceAll(strings.TrimSpace(s), "`", "'"))
 }
 
 func isBashToolName(toolName string) bool {
@@ -5605,18 +5605,15 @@ func formatProgressToolInput(toolName, text string) string {
 			return formatted
 		}
 		// JSON parsing failed or empty todos - show raw input as text block
-		return fmt.Sprintf("```text\n%s\n```", text)
+		return core.SafeMarkdownCodeFence(text, "text")
 	}
 
 	text = preprocessFeishuMarkdown(sanitizeMarkdownURLs(text))
-	if strings.Contains(text, "```") {
-		return text
-	}
 	if isBashToolName(toolName) {
-		return fmt.Sprintf("```bash\n%s\n```", text)
+		return core.SafeMarkdownCodeFence(text, "bash")
 	}
-	if strings.Contains(text, "\n") || len(text) > 180 {
-		return fmt.Sprintf("```text\n%s\n```", text)
+	if strings.Contains(text, "```") || strings.Contains(text, "\n") || len(text) > 180 {
+		return core.SafeMarkdownCodeFence(text, "text")
 	}
 	return fmt.Sprintf("`%s`", inlineCodeText(text))
 }
@@ -5627,13 +5624,7 @@ func formatProgressToolResult(text string) string {
 		return ""
 	}
 	text = preprocessFeishuMarkdown(sanitizeMarkdownURLs(text))
-	if strings.Contains(text, "```") {
-		return text
-	}
-	if strings.Contains(text, "\n") || len(text) > 220 {
-		return fmt.Sprintf("```\n%s\n```", text)
-	}
-	return text
+	return core.SafeMarkdownCodeFence(text, "")
 }
 
 func progressNoOutputText(lang string) string {

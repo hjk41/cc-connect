@@ -28,12 +28,17 @@ const (
 	compactProgressAPITimeout = 15 * time.Second
 
 	// progressDigestInterval is the longest a digest-mode batch waits before send.
-	progressDigestInterval   = 30 * time.Second
+	// Digest mode is only a fallback while the live card is unavailable; keep it
+	// sparse so a long outage cannot turn into a stream of standalone cards.
+	progressDigestInterval   = 2 * time.Minute
 	progressDigestFlushRunes = 3000
 	progressMaxRollovers     = 2
 
 	// Coalesce progress during an outage instead of retrying every tool event.
 	compactProgressRetryInterval = time.Second
+	// While digesting, keep trying to recreate the live card with exponential
+	// backoff. Recovery must not wait for the end of the turn.
+	progressLiveCardRetryMaxInterval = 30 * time.Second
 )
 
 var progressUpdateFailureBackoffs = []time.Duration{compactProgressRetryInterval, 4 * time.Second, 8 * time.Second}
@@ -270,6 +275,11 @@ type compactProgressWriter struct {
 	digestSeeded     int
 	digestInterval   time.Duration
 	digestFlushRunes int
+	digestFlushAt    time.Time
+
+	// liveRetryAt/liveRetryDelay drive live-card recovery while digesting.
+	liveRetryAt    time.Time
+	liveRetryDelay time.Duration
 
 	finalized bool
 
@@ -574,6 +584,7 @@ func (w *compactProgressWriter) AppendStructured(item ProgressCardEntry, fallbac
 	if w.digestMode {
 		w.consumeNewDigestsLocked()
 		w.maybeFlushDigestLocked(false)
+		w.scheduleDigestWakeupLocked()
 		return true
 	}
 	w.syncLocked(false)
@@ -625,9 +636,15 @@ func (w *compactProgressWriter) Finalize(state ProgressCardState) bool {
 		return true
 	}
 	if w.digestMode {
-		w.flushDigestLocked()
-		w.finalized = true
-		return true
+		// Give the live card one immediate recovery chance before falling back
+		// to a terminal digest. If recovery succeeds, continue through the normal
+		// final card update path below.
+		w.tryRecoverLiveCardLocked()
+		if w.digestMode {
+			w.flushDigestLocked()
+			w.finalized = true
+			return true
+		}
 	}
 	if state == "" {
 		state = ProgressCardStateCompleted
@@ -825,7 +842,98 @@ func (w *compactProgressWriter) enterDigestLocked() {
 	w.handle = nil
 	w.cancelTimerLocked()
 	w.backoffUntil = time.Time{}
+	if w.liveRetryDelay <= 0 {
+		w.liveRetryDelay = w.createRetryDelay
+		if w.liveRetryDelay <= 0 {
+			w.liveRetryDelay = 2 * time.Second
+		}
+	}
+	now := w.now()
+	w.liveRetryAt = now.Add(w.liveRetryDelay)
+	if w.digestFlushAt.IsZero() {
+		w.digestFlushAt = now.Add(w.digestInterval)
+	}
 	w.consumeNewDigestsLocked()
+	w.scheduleDigestWakeupLocked()
+}
+
+// tryRecoverLiveCardLocked attempts to recreate the live progress card while
+// digest mode is active. On success the digest fallback is abandoned because
+// the recreated card already carries the current progress snapshot.
+func (w *compactProgressWriter) tryRecoverLiveCardLocked() {
+	if !w.digestMode || w.ctx.Err() != nil || w.finalized {
+		return
+	}
+	if w.content == "" {
+		if !w.renderCardContentLocked() || w.content == "" {
+			w.scheduleLiveCardRetryLocked()
+			return
+		}
+	}
+	handle, err := w.createOnceLocked()
+	if err == nil && handle != nil && w.ctx.Err() == nil {
+		w.digestMode = false
+		w.handle = handle
+		w.lastSent = w.content
+		w.lastUpdateAt = w.now()
+		w.consecutiveFailures = 0
+		w.createAttempts = 0
+		w.backoffUntil = time.Time{}
+		w.liveRetryAt = time.Time{}
+		w.liveRetryDelay = 0
+		w.digestBuf.Reset()
+		w.digestFlushAt = time.Time{}
+		w.cancelTimerLocked()
+		slog.Info("progress writer: live card recovered", "platform", w.platform.Name(), "style", w.style)
+		return
+	}
+	if w.ctx.Err() != nil {
+		return
+	}
+	slog.Debug("progress writer: live card recovery failed", "platform", w.platform.Name(), "style", w.style, "error", err)
+	w.scheduleLiveCardRetryLocked()
+}
+
+func (w *compactProgressWriter) scheduleLiveCardRetryLocked() {
+	delay := w.liveRetryDelay
+	if delay <= 0 {
+		delay = w.createRetryDelay
+		if delay <= 0 {
+			delay = 2 * time.Second
+		}
+	}
+	next := delay * 2
+	if next > progressLiveCardRetryMaxInterval {
+		next = progressLiveCardRetryMaxInterval
+	}
+	w.liveRetryDelay = next
+	w.liveRetryAt = w.now().Add(delay)
+}
+
+// scheduleDigestWakeupLocked arranges one timer for whichever digest-mode
+// deadline comes first: live-card recovery or the sparse digest flush.
+func (w *compactProgressWriter) scheduleDigestWakeupLocked() {
+	if !w.digestMode || w.finalized || w.ctx.Err() != nil {
+		return
+	}
+	now := w.now()
+	var next time.Time
+	if !w.liveRetryAt.IsZero() {
+		next = w.liveRetryAt
+	}
+	if w.digestBuf.Len() > 0 && !w.digestFlushAt.IsZero() {
+		if next.IsZero() || w.digestFlushAt.Before(next) {
+			next = w.digestFlushAt
+		}
+	}
+	if next.IsZero() {
+		return
+	}
+	delay := next.Sub(now)
+	if delay < 0 {
+		delay = 0
+	}
+	w.scheduleLocked(delay, false)
 }
 
 func (w *compactProgressWriter) consumeNewDigestsLocked() {
@@ -851,7 +959,9 @@ func (w *compactProgressWriter) maybeFlushDigestLocked(force bool) {
 		return
 	}
 	if !force && utf8.RuneCountInString(w.digestBuf.String()) < w.digestFlushRunes {
-		w.scheduleLocked(w.digestInterval, false)
+		if w.digestFlushAt.IsZero() {
+			w.digestFlushAt = w.now().Add(w.digestInterval)
+		}
 		return
 	}
 	w.flushDigestLocked()
@@ -862,8 +972,9 @@ func (w *compactProgressWriter) flushDigestLocked() {
 		return
 	}
 	body := strings.TrimSpace(w.digestBuf.String())
-	w.digestBuf.Reset()
 	if body == "" {
+		w.digestBuf.Reset()
+		w.digestFlushAt = time.Time{}
 		return
 	}
 	header := w.digestHeader
@@ -875,6 +986,7 @@ func (w *compactProgressWriter) flushDigestLocked() {
 		budget = maxPlatformMessageLen
 	}
 	chunks := SplitMessageCodeFenceAware(body, budget)
+	failed := false
 	for _, chunk := range chunks {
 		msg := header + "\n" + chunk
 		callCtx, cancel := w.withAPITimeout()
@@ -882,9 +994,18 @@ func (w *compactProgressWriter) flushDigestLocked() {
 		cancel()
 		if err != nil {
 			slog.Warn("progress writer: digest send failed", "platform", w.platform.Name(), "error", err)
-			return
+			failed = true
+			break
 		}
 	}
+	if failed {
+		// Keep the buffered digest for a later retry rather than dropping the
+		// only user-visible record of progress during the outage.
+		w.digestFlushAt = w.now().Add(w.digestInterval)
+		return
+	}
+	w.digestBuf.Reset()
+	w.digestFlushAt = time.Time{}
 }
 
 func (w *compactProgressWriter) scheduleLocked(delay time.Duration, replace bool) {
@@ -918,7 +1039,16 @@ func (w *compactProgressWriter) onTimer(gen int) {
 		return
 	}
 	if w.digestMode {
-		w.flushDigestLocked()
+		now := w.now()
+		if !w.liveRetryAt.IsZero() && !now.Before(w.liveRetryAt) {
+			w.tryRecoverLiveCardLocked()
+		}
+		if w.digestMode {
+			if w.digestBuf.Len() > 0 && !w.digestFlushAt.IsZero() && !now.Before(w.digestFlushAt) {
+				w.flushDigestLocked()
+			}
+			w.scheduleDigestWakeupLocked()
+		}
 		return
 	}
 	w.syncLocked(true)

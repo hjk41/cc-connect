@@ -542,6 +542,77 @@ func TestProgressWriter_RolloverAfterThreeUpdateFailures(t *testing.T) {
 	}
 }
 
+// Regression: once compact progress falls back to digest mode, it must keep
+// retrying the live card during the turn instead of waiting for Finalize.
+// Digest fallback messages must also stay sparse; the Finsearch news incident
+// produced a standalone card roughly every 30 seconds for the rest of a long turn.
+func TestProgressWriter_DigestModeRetriesAndRecoversLiveCard(t *testing.T) {
+	p, w, clock := newScriptedProgress(0, -1)
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryThinking, Text: "e0"}, "e0") {
+		t.Fatal("first append should be handled")
+	}
+
+	// The second initial creation failure enters digest mode.
+	clock.now = clock.now.Add(2 * time.Second)
+	clock.fire()
+	if !w.digestMode {
+		t.Fatal("second create failure should enter digest mode")
+	}
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "e1"}, "e1") {
+		t.Fatal("digest append should be handled")
+	}
+
+	// Thirty seconds later the writer retries the live card, but must not emit
+	// the old every-30s digest flood while the outage continues.
+	clock.now = clock.now.Add(30 * time.Second)
+	clock.fire()
+	if starts := p.getPreviewStarts(); len(starts) != 0 {
+		t.Fatalf("failed create attempts should not produce cards yet: %#v", starts)
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("digest fallback flooded chat before live-card recovery: %#v", sent)
+	}
+
+	// When the platform recovers, the next in-turn retry recreates the live card.
+	p.mu.Lock()
+	p.failCreates = 0
+	p.mu.Unlock()
+	clock.now = clock.now.Add(2 * time.Second)
+	clock.fire()
+	starts := p.getPreviewStarts()
+	if len(starts) != 1 {
+		t.Fatalf("live card was not recreated during the turn, starts=%d", len(starts))
+	}
+	if w.digestMode {
+		t.Fatal("successful live-card retry should leave digest mode")
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("recovered live card should suppress digest messages: %#v", sent)
+	}
+
+	// Later progress resumes editing that same card.
+	if !w.AppendStructured(ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "e2"}, "e2") {
+		t.Fatal("post-recovery append should be handled")
+	}
+	edits := p.getPreviewEdits()
+	if len(edits) != 1 {
+		t.Fatalf("post-recovery edits = %d, want 1", len(edits))
+	}
+	payload, ok := ParseProgressCardPayload(edits[0])
+	if !ok {
+		t.Fatalf("post-recovery edit is not a progress payload: %q", edits[0])
+	}
+	var joined string
+	for _, item := range payload.Items {
+		joined += item.Text + "|"
+	}
+	for _, want := range []string{"e0", "e1", "e2"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("recovered progress lost %q in %q", want, joined)
+		}
+	}
+}
+
 func TestProgressWriter_DigestCoalescesAndFlushesOnFinalize(t *testing.T) {
 	p, w, clock := newScriptedProgress(0, -1)
 	const n = 6

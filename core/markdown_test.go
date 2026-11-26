@@ -1,6 +1,9 @@
 package core
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestStripMarkdown(t *testing.T) {
 	tests := []struct {
@@ -42,5 +45,47 @@ func TestStripMarkdown(t *testing.T) {
 				t.Errorf("StripMarkdown(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSafeMarkdownCodeFence_NeutralizesNestedFenceRuns(t *testing.T) {
+	input := "before\n```python\nprint('inner')\n```\nafter"
+	got := SafeMarkdownCodeFence(input, "text")
+	if !strings.HasPrefix(got, "```text\n") || !strings.HasSuffix(got, "\n```") {
+		t.Fatalf("safe fence wrapper missing: %q", got)
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(got, "```text\n"), "\n```")
+	if strings.Contains(body, "```") {
+		t.Fatalf("nested fence run was not neutralized: %q", body)
+	}
+	if !strings.Contains(body, "`\u200b`\u200b`") {
+		t.Fatalf("neutralized fence markers should remain visually recognizable: %q", body)
+	}
+
+	four := SafeMarkdownCodeFence("x ```` y", "")
+	body = strings.TrimSuffix(strings.TrimPrefix(four, "```\n"), "\n```")
+	if strings.Contains(body, "```") {
+		t.Fatalf("four-backtick run left a closing fence behind: %q", body)
+	}
+}
+
+func TestSafeMarkdownInlineCode_EscapesBackticks(t *testing.T) {
+	if got := SafeMarkdownInlineCode("echo `x`"); got != "`echo 'x'`" {
+		t.Fatalf("SafeMarkdownInlineCode() = %q", got)
+	}
+}
+
+func TestNeutralizeHTMLTagOpeners(t *testing.T) {
+	in := "if a < b { print(<a href=\"x\">text</a> <![CDATA[x]]> <?xml>) }"
+	got := NeutralizeHTMLTagOpeners(in)
+	if !strings.Contains(got, "<\u200ba href") || !strings.Contains(got, "<\u200b/a>") {
+		t.Fatalf("tag openers not neutralized: %q", got)
+	}
+	if !strings.Contains(got, "a < b") {
+		t.Fatalf("comparison operator should remain untouched: %q", got)
+	}
+	fenced := SafeMarkdownCodeFence("<script>alert(1)</script>", "text")
+	if !strings.Contains(fenced, "<\u200bscript>") {
+		t.Fatalf("safe fence should neutralize HTML-like tags: %q", fenced)
 	}
 }
