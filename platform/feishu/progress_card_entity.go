@@ -134,7 +134,7 @@ func progressElementJSON(element map[string]any) string {
 }
 
 func withElementID(element map[string]any, id string) map[string]any {
-	out := make(map[string]any, len(element)+1)
+	out := make(map[string]any, len(element))
 	for k, v := range element {
 		out[k] = v
 	}
