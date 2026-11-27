@@ -1,7 +1,6 @@
 package max
 
 import (
-	"bytes"
 	"context"
 	"log/slog"
 	"net/http"
@@ -17,9 +16,9 @@ func TestPostMessageErrorOmitsResponseSecret(t *testing.T) {
 		_, _ = w.Write([]byte(`{"code":"denied","message":"not allowed","secret":"` + marker + `"}`))
 	}))
 	defer api.Close()
-	var logs bytes.Buffer
+	logs := &synchronizedLogBuffer{}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	p := &Platform{apiBase: api.URL, token: "test", client: api.Client()}
 	err := p.postMessage(context.Background(), replyContext{chatID: "123"}, &maxSendBody{Text: "hello"})
@@ -38,9 +37,9 @@ func TestChatActionDebugLogOmitsResponseBody(t *testing.T) {
 		_, _ = w.Write([]byte(`{"secret":"` + sentinel + `"}`))
 	}))
 	defer api.Close()
-	var logs bytes.Buffer
+	logs := &synchronizedLogBuffer{}
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 	p := &Platform{apiBase: api.URL, token: "test", client: api.Client()}
 	if err := p.sendChatAction(context.Background(), "123", "typing_on"); err == nil {
