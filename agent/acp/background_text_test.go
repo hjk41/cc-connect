@@ -1,6 +1,7 @@
 package acp
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -85,5 +86,74 @@ func TestSession_OutOfTurnNonTextGetsNoSyntheticResult(t *testing.T) {
 		case <-deadline:
 			return
 		}
+	}
+}
+
+// Regression: a background agent streaming token-sized chunks must not cause
+// one synthetic EventResult (and therefore one platform message) per chunk.
+func TestSession_OutOfTurnTextStreamCoalescesSyntheticResults(t *testing.T) {
+	oldQuiet, oldMax := acpBackgroundTextQuietDelay, acpBackgroundTextMaxWindow
+	acpBackgroundTextQuietDelay = 120 * time.Millisecond
+	acpBackgroundTextMaxWindow = 2 * time.Second
+	defer func() { acpBackgroundTextQuietDelay, acpBackgroundTextMaxWindow = oldQuiet, oldMax }()
+
+	s, wResp, _ := newTestSession(t, nil)
+	for i := 0; i < 5; i++ {
+		text := string(rune('a' + i))
+		_, _ = wResp.Write([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"test-session-id","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"` + text + `"}}}}` + "\n"))
+	}
+
+	var texts []string
+	results := 0
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ev := <-s.Events():
+			if ev.Type == core.EventText {
+				texts = append(texts, ev.Content)
+			}
+			if ev.Type == core.EventResult {
+				results++
+			}
+		case <-deadline:
+			if results != 1 {
+				t.Fatalf("synthetic EventResult count = %d, want 1; events texts=%q", results, texts)
+			}
+			if got := strings.Join(texts, ""); got != "abcde" {
+				t.Fatalf("streamed text = %q, want abcde", got)
+			}
+			return
+		}
+	}
+}
+
+func TestSession_OutOfTurnTextMaxWindowFlushesContinuousStream(t *testing.T) {
+	oldQuiet, oldMax := acpBackgroundTextQuietDelay, acpBackgroundTextMaxWindow
+	acpBackgroundTextQuietDelay = 150 * time.Millisecond
+	acpBackgroundTextMaxWindow = 300 * time.Millisecond
+	defer func() { acpBackgroundTextQuietDelay, acpBackgroundTextMaxWindow = oldQuiet, oldMax }()
+
+	s, _, _ := newTestSession(t, nil)
+	sid := s.currentACPSessionID()
+	s.scheduleOutOfTurnTextResult(sid)
+
+	s.outOfTurnTextMu.Lock()
+	s.outOfTurnTextWindowStart = time.Now().Add(-acpBackgroundTextMaxWindow)
+	s.outOfTurnTextMu.Unlock()
+	s.scheduleOutOfTurnTextResult(sid)
+
+	select {
+	case ev := <-s.Events():
+		if ev.Type != core.EventResult {
+			t.Fatalf("first event = %+v, want synthetic EventResult", ev)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("continuous out-of-turn text did not flush at max window")
+	}
+
+	select {
+	case ev := <-s.Events():
+		t.Fatalf("stale quiet timer emitted an extra event: %+v", ev)
+	case <-time.After(250 * time.Millisecond):
 	}
 }

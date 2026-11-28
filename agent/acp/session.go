@@ -23,6 +23,11 @@ import (
 // roughly half the map (iteration order is arbitrary) to bound memory.
 const toolInputCacheMaxEntries = 1000
 
+var (
+	acpBackgroundTextQuietDelay = time.Second
+	acpBackgroundTextMaxWindow  = 20 * time.Second
+)
+
 type acpSession struct {
 	allowedTools []string
 	workDir      string
@@ -82,6 +87,12 @@ type acpSession struct {
 	// synthetic EventResult so the engine's unsolicited reader relays them
 	// to the platform instead of buffering them until the next turn.
 	promptInFlight atomic.Int32
+
+	outOfTurnTextMu          sync.Mutex
+	outOfTurnTextTimer       *time.Timer
+	outOfTurnTextSessionID   string
+	outOfTurnTextWindowStart time.Time
+	outOfTurnTextGeneration  int
 
 	callbacks sessionCallbacks // may be nil (tests, integration harness)
 
@@ -621,8 +632,58 @@ func (s *acpSession) onNotification(method string, params json.RawMessage) {
 	// as stale. Close it with a synthetic result so the unsolicited reader
 	// relays it immediately.
 	if hasVisible && s.promptInFlight.Load() == 0 {
-		s.emit(core.Event{Type: core.EventResult, SessionID: sid, Done: true})
+		s.scheduleOutOfTurnTextResult(sid)
 	}
+}
+
+func (s *acpSession) scheduleOutOfTurnTextResult(sid string) {
+	if sid == "" {
+		sid = s.currentACPSessionID()
+	}
+	now := time.Now()
+	s.outOfTurnTextMu.Lock()
+	if s.outOfTurnTextSessionID != sid {
+		s.outOfTurnTextSessionID = sid
+		s.outOfTurnTextWindowStart = now
+	}
+	if s.outOfTurnTextWindowStart.IsZero() {
+		s.outOfTurnTextWindowStart = now
+	}
+	if now.Sub(s.outOfTurnTextWindowStart) >= acpBackgroundTextMaxWindow {
+		if s.outOfTurnTextTimer != nil {
+			s.outOfTurnTextTimer.Stop()
+			s.outOfTurnTextTimer = nil
+		}
+		s.outOfTurnTextWindowStart = time.Time{}
+		s.outOfTurnTextGeneration++
+		s.outOfTurnTextMu.Unlock()
+		s.emit(core.Event{Type: core.EventResult, SessionID: sid, Done: true})
+		return
+	}
+	s.outOfTurnTextGeneration++
+	gen := s.outOfTurnTextGeneration
+	if s.outOfTurnTextTimer != nil {
+		s.outOfTurnTextTimer.Stop()
+	}
+	s.outOfTurnTextTimer = time.AfterFunc(acpBackgroundTextQuietDelay, func() {
+		s.flushOutOfTurnTextResult(sid, gen)
+	})
+	s.outOfTurnTextMu.Unlock()
+}
+
+func (s *acpSession) flushOutOfTurnTextResult(sid string, generation int) {
+	s.outOfTurnTextMu.Lock()
+	if s.outOfTurnTextSessionID != sid || s.outOfTurnTextGeneration != generation {
+		s.outOfTurnTextMu.Unlock()
+		return
+	}
+	s.outOfTurnTextTimer = nil
+	s.outOfTurnTextWindowStart = time.Time{}
+	s.outOfTurnTextMu.Unlock()
+	if s.promptInFlight.Load() != 0 {
+		return
+	}
+	s.emit(core.Event{Type: core.EventResult, SessionID: sid, Done: true})
 }
 
 // maybeAbsorbCurrentModeUpdate watches session/update notifications
@@ -1151,6 +1212,13 @@ func (s *acpSession) Close() error {
 		s.requestSessionClose()
 		s.alive.Store(false)
 		s.cancel()
+		s.outOfTurnTextMu.Lock()
+		if s.outOfTurnTextTimer != nil {
+			s.outOfTurnTextTimer.Stop()
+			s.outOfTurnTextTimer = nil
+		}
+		s.outOfTurnTextGeneration++
+		s.outOfTurnTextMu.Unlock()
 		if s.cmd != nil && s.cmd.Process != nil {
 			_ = s.cmd.Process.Kill()
 		}
