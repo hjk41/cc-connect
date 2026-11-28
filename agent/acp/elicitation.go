@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/chenhg5/cc-connect/core"
@@ -25,8 +26,11 @@ type elicitationOption struct {
 // keyed by.
 type elicitationQuestion struct {
 	PropertyKey string
-	Question    core.UserQuestion
-	Options     []elicitationOption
+	// OtherPropertyKey is Factory Droid's companion free-text field
+	// (<question key>_other) used when the enum value "other" is selected.
+	OtherPropertyKey string
+	Question         core.UserQuestion
+	Options          []elicitationOption
 }
 
 // elicitationState is cached per pending elicitation/create request so
@@ -91,10 +95,15 @@ func parseElicitationCreateParams(params json.RawMessage) (*elicitationState, er
 		if !ok {
 			continue
 		}
+		otherKey := ""
+		if otherProp, ok := p.Schema.Properties[key+"_other"]; ok && otherProp.Type == "string" {
+			otherKey = key + "_other"
+		}
 		st.Questions = append(st.Questions, elicitationQuestion{
-			PropertyKey: key,
-			Question:    q,
-			Options:     elicitationEnumOptions(prop),
+			PropertyKey:      key,
+			OtherPropertyKey: otherKey,
+			Question:         q,
+			Options:          elicitationEnumOptions(prop),
 		})
 	}
 	if len(st.Questions) == 0 {
@@ -163,17 +172,25 @@ func elicitationEnumOptions(prop elicitationProperty) []elicitationOption {
 		raw = prop.Items.AnyOf
 	}
 	// Option shape differs by agent: kimi uses const=value/title=label/
-	// description=hint, while Devin uses const=label/title=description with
-	// no `description` field. Devin-style forms are recognized by the
-	// property-level description carrying the question text.
-	devinStyle := prop.Description != ""
+	// description=hint; Devin uses const=label/title=description with no
+	// `description` field; Factory Droid uses machine consts (option_0,
+	// option_1, other), human labels in title, and hints in description.
+	factoryStyle := machineValuedElicitationOptions(raw)
+	devinStyle := !factoryStyle && prop.Description != ""
 	opts := make([]elicitationOption, 0, len(raw))
 	for _, o := range raw {
 		opt := elicitationOption{Value: o.Const}
-		if devinStyle {
+		switch {
+		case factoryStyle:
+			opt.Label = o.Title
+			if opt.Label == "" {
+				opt.Label = o.Const
+			}
+			opt.Description = o.Description
+		case devinStyle:
 			opt.Label = o.Const
 			opt.Description = o.Title
-		} else {
+		default:
 			opt.Label = o.Title
 			if opt.Label == "" {
 				opt.Label = o.Const
@@ -183,6 +200,83 @@ func elicitationEnumOptions(prop elicitationProperty) []elicitationOption {
 		opts = append(opts, opt)
 	}
 	return opts
+}
+
+// machineValuedElicitationOptions recognizes Factory Droid's generated enum
+// values. Every non-other option is option_<number>; meaningful user-defined
+// labels (including a literal "option_0" in another agent's schema) therefore
+// do not take this path unless the whole generated pattern is present.
+func machineValuedElicitationOptions(raw []elicitationEnumOption) bool {
+	seenNumbered := false
+	for _, o := range raw {
+		if o.Const == "other" {
+			continue
+		}
+		suffix, ok := strings.CutPrefix(o.Const, "option_")
+		if !ok {
+			return false
+		}
+		if _, err := strconv.Atoi(suffix); err != nil {
+			return false
+		}
+		seenNumbered = true
+	}
+	return seenNumbered
+}
+
+func matchElicitationOption(options []elicitationOption, answer string) (elicitationOption, bool) {
+	for _, opt := range options {
+		if answer == opt.Label || answer == opt.Value {
+			return opt, true
+		}
+	}
+	return elicitationOption{}, false
+}
+
+func elicitationOtherOption(q elicitationQuestion) (elicitationOption, bool) {
+	if q.OtherPropertyKey == "" {
+		return elicitationOption{}, false
+	}
+	for _, opt := range q.Options {
+		if opt.Value == "other" {
+			return opt, true
+		}
+	}
+	return elicitationOption{}, false
+}
+
+// buildElicitationMultiSelectValues maps the engine's comma-joined answer
+// back to enum consts in declared order. Unknown parts are custom text; when
+// the schema has Factory Droid's "other" plus <key>_other companion field,
+// they are returned through that channel instead of being dropped.
+func buildElicitationMultiSelectValues(q elicitationQuestion, ans string) ([]string, string) {
+	parts := strings.Split(ans, ", ")
+	matched := make(map[string]bool, len(parts))
+	customParts := make([]string, 0, 1)
+	other, hasOther := elicitationOtherOption(q)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if opt, ok := matchElicitationOption(q.Options, part); ok {
+			matched[opt.Value] = true
+			continue
+		}
+		customParts = append(customParts, part)
+	}
+
+	wantOther := len(customParts) > 0 && hasOther
+	picked := make([]string, 0, len(matched)+1)
+	for _, opt := range q.Options {
+		if matched[opt.Value] || (wantOther && opt.Value == other.Value) {
+			picked = append(picked, opt.Value)
+		}
+	}
+	if wantOther {
+		return picked, strings.Join(customParts, ", ")
+	}
+	return picked, ""
 }
 
 // buildElicitationResponse translates an engine PermissionResult into an
@@ -217,29 +311,25 @@ func buildElicitationResponse(st *elicitationState, result core.PermissionResult
 			continue
 		}
 		if q.Question.MultiSelect {
-			parts := strings.Split(ans, ", ")
-			picked := make([]string, 0, len(parts))
-			for _, opt := range q.Options {
-				for _, p := range parts {
-					if p == opt.Label {
-						picked = append(picked, opt.Value)
-						break
-					}
-				}
-			}
+			picked, otherText := buildElicitationMultiSelectValues(q, ans)
 			if len(picked) > 0 {
 				content[q.PropertyKey] = picked
 			}
+			if otherText != "" && q.OtherPropertyKey != "" {
+				content[q.OtherPropertyKey] = otherText
+			}
 			continue
 		}
-		value := ans
-		for _, opt := range q.Options {
-			if ans == opt.Label {
-				value = opt.Value
-				break
-			}
+		if opt, ok := matchElicitationOption(q.Options, ans); ok {
+			content[q.PropertyKey] = opt.Value
+			continue
 		}
-		content[q.PropertyKey] = value
+		if other, ok := elicitationOtherOption(q); ok {
+			content[q.PropertyKey] = other.Value
+			content[q.OtherPropertyKey] = ans
+			continue
+		}
+		content[q.PropertyKey] = ans
 	}
 	if len(content) == 0 {
 		return decline

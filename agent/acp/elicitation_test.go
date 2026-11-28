@@ -175,6 +175,145 @@ func TestBuildElicitationResponse_devinAccept(t *testing.T) {
 	}
 }
 
+// Factory Droid AskUser → elicitation/create fixture. Droid uses generated
+// enum consts (option_0/option_1/other), human labels in title, and a
+// companion <question>_other free-text property for custom answers.
+const elicitationCreateFactoryFixture = `{
+	"sessionId": "test-session-id",
+	"toolCallId": "call_factory_1",
+	"mode": "form",
+	"message": "Droid needs your answers to continue.",
+	"requestedSchema": {
+		"type": "object",
+		"properties": {
+			"question_1": {
+				"type": "string",
+				"title": "颜色",
+				"description": "选择测试颜色？",
+				"oneOf": [
+					{"const": "option_0", "title": "red", "description": "选择红色"},
+					{"const": "option_1", "title": "blue", "description": "选择蓝色"},
+					{"const": "other", "title": "Other answer"}
+				]
+			},
+			"question_1_other": {
+				"type": "string",
+				"title": "颜色: Other answer",
+				"description": "Enter your answer here if you select Other answer."
+			},
+			"question_2": {
+				"type": "array",
+				"title": "水果",
+				"description": "选择测试水果？",
+				"items": {"anyOf": [
+					{"const": "option_0", "title": "apple", "description": "选择苹果"},
+					{"const": "option_1", "title": "banana", "description": "选择香蕉"},
+					{"const": "other", "title": "Other answer"}
+				]},
+				"minItems": 1,
+				"uniqueItems": true
+			},
+			"question_2_other": {
+				"type": "string",
+				"title": "水果: Other answer",
+				"description": "Enter your answer here if you select Other answer."
+			}
+		},
+		"required": ["question_1", "question_2"]
+	}
+}`
+
+func TestParseElicitationCreateParams_FactoryMachineOptions(t *testing.T) {
+	st, err := parseElicitationCreateParams(json.RawMessage(elicitationCreateFactoryFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Questions) != 2 {
+		t.Fatalf("got %d questions, want 2 (companion _other fields must be skipped)", len(st.Questions))
+	}
+	q0 := st.Questions[0]
+	if q0.PropertyKey != "question_1" || q0.OtherPropertyKey != "question_1_other" {
+		t.Fatalf("q0 keys = %q/%q", q0.PropertyKey, q0.OtherPropertyKey)
+	}
+	if q0.Question.Header != "颜色" || q0.Question.Question != "选择测试颜色？" {
+		t.Fatalf("q0 question = %+v", q0.Question)
+	}
+	if len(q0.Options) != 3 || q0.Options[0].Value != "option_0" || q0.Options[0].Label != "red" || q0.Options[0].Description != "选择红色" {
+		t.Fatalf("q0 options = %+v", q0.Options)
+	}
+	if q0.Options[2].Value != "other" || q0.Options[2].Label != "Other answer" {
+		t.Fatalf("q0 other option = %+v", q0.Options[2])
+	}
+	q1 := st.Questions[1]
+	if q1.PropertyKey != "question_2" || q1.OtherPropertyKey != "question_2_other" || !q1.Question.MultiSelect {
+		t.Fatalf("q1 = %+v", q1)
+	}
+	if len(q1.Options) != 3 || q1.Options[0].Value != "option_0" || q1.Options[0].Label != "apple" {
+		t.Fatalf("q1 options = %+v", q1.Options)
+	}
+}
+
+func TestBuildElicitationResponse_factoryCustomAnswers(t *testing.T) {
+	st, err := parseElicitationCreateParams(json.RawMessage(elicitationCreateFactoryFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	customFruit := "我还没决定，先解释一下这些水果的区别"
+	res := buildElicitationResponse(st, core.PermissionResult{
+		Behavior: "allow",
+		UpdatedInput: map[string]any{
+			"answers": map[string]any{
+				"选择测试颜色？": "purple",
+				"选择测试水果？": customFruit,
+			},
+		},
+	})
+	if res["action"] != "accept" {
+		t.Fatalf("action = %v, want accept", res["action"])
+	}
+	content, ok := res["content"].(map[string]any)
+	if !ok {
+		t.Fatalf("content missing: %v", res)
+	}
+	if content["question_1"] != "other" || content["question_1_other"] != "purple" {
+		t.Fatalf("single custom answer = %v", content)
+	}
+	picked, ok := content["question_2"].([]string)
+	if !ok || len(picked) != 1 || picked[0] != "other" {
+		t.Fatalf("multi custom answer = %v, want [other]", content["question_2"])
+	}
+	if content["question_2_other"] != customFruit {
+		t.Fatalf("question_2_other = %v, want custom text", content["question_2_other"])
+	}
+}
+
+func TestBuildElicitationResponse_factoryMixedMultiSelect(t *testing.T) {
+	st, err := parseElicitationCreateParams(json.RawMessage(elicitationCreateFactoryFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := buildElicitationResponse(st, core.PermissionResult{
+		Behavior: "allow",
+		UpdatedInput: map[string]any{
+			"answers": map[string]any{
+				"选择测试颜色？": "red",
+				"选择测试水果？": "apple, 以后再定",
+			},
+		},
+	})
+	content, _ := res["content"].(map[string]any)
+	if content["question_1"] != "option_0" {
+		t.Fatalf("question_1 = %v, want option_0", content["question_1"])
+	}
+	picked, ok := content["question_2"].([]string)
+	if !ok || len(picked) != 2 || picked[0] != "option_0" || picked[1] != "other" {
+		t.Fatalf("question_2 = %v, want [option_0 other]", content["question_2"])
+	}
+	if content["question_2_other"] != "以后再定" {
+		t.Fatalf("question_2_other = %v", content["question_2_other"])
+	}
+}
+
 func TestParseElicitationCreateParams_rejectsNonFormMode(t *testing.T) {
 	params := json.RawMessage(`{"mode": "url", "message": "m", "requestedSchema": {"properties": {"q0": {"type": "string"}}}}`)
 	if _, err := parseElicitationCreateParams(params); err == nil {
