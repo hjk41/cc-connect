@@ -306,7 +306,14 @@ func TestStreamJSONResult(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("HOME", t.TempDir())
+			home := t.TempDir()
+			t.Setenv("HOME", home)
+			// os.UserHomeDir ignores HOME on Windows; point the Windows
+			// variables at the same temp dir so chat recovery finds the
+			// helper's file on every platform.
+			t.Setenv("USERPROFILE", home)
+			t.Setenv("HOMEDRIVE", "")
+			t.Setenv("HOMEPATH", "")
 			argsPath := filepath.Join(t.TempDir(), "args")
 			extraEnv := []string{
 				"GO_WANT_ANTIGRAVITY_STREAM_HELPER=1",
