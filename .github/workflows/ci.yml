@@ -148,7 +148,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install sqlite --yes --no-progress
+          if (-not (Get-Command sqlite3 -ErrorAction SilentlyContinue)) {
+            try { choco install sqlite --yes --no-progress }
+            catch { Write-Warning "choco install sqlite failed: $_" }
+          }
           if (-not (Get-Command sqlite3 -ErrorAction SilentlyContinue)) {
             # Chocolatey's community feed occasionally returns 503. Fall back
             # to the official SQLite tools zip so the Cursor tests still run.
